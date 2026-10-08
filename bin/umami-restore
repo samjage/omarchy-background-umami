@@ -1,0 +1,13 @@
+#!/bin/bash
+# Go back to the current theme's own wallpaper and forget any pinned one.
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+
+first=$(find -L "$OMARCHY_STATE/current/theme/backgrounds" -maxdepth 1 -type f "${UMAMI_IMAGES[@]}" 2>/dev/null | sort | head -n1)
+[[ -n $first ]] || umami_die "this theme has no wallpapers to go back to"
+
+rm -f -- "$UMAMI_STATE/pinned"
+"$root/libexec/umami-shuffle" stop --quiet
+omarchy-theme-bg-set "$first"

@@ -1,0 +1,26 @@
+#!/bin/bash
+# Remove Background Umami from Omarchy (including a running shuffle timer), leaving your menu file exactly as it
+# was before. Wallpapers you added to a theme stay: they are your files, and
+# Omarchy's own picker uses them.
+#
+# Usage: umami-uninstall [--purge]
+#   --purge   also delete Umami's settings, cache and saved pin
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+source "$root/lib/menu.sh"
+source "$root/lib/hook.sh"
+source "$root/lib/shuffle.sh"
+
+trap umami_menu_cleanup EXIT
+rm -f -- "$UMAMI_STATE/offered" # so adding the plugin again offers setup again
+umami_menu_uninstall
+umami_hook_uninstall
+umami_shuffle_units_remove
+echo "Style → Background is back to stock."
+
+if [[ ${1:-} == "--purge" ]]; then
+  rm -rf -- "$UMAMI_STATE" "$UMAMI_CACHE" "$UMAMI_CONFIG"
+  echo "Settings, cache and pin removed."
+fi

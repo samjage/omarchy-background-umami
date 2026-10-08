@@ -1,0 +1,28 @@
+#!/bin/bash
+# Where your own wallpapers live.
+#
+# Usage: umami-folder path | open | choose | set <folder>
+#   path     print the folder
+#   open     show it in your file manager (created if it is missing)
+#   choose   pick the folder from a short list, or browse for one (no typing)
+#   set      choose the folder without asking
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+source "$root/lib/folder.sh"
+
+folder=$(umami_custom_folders | head -n1)
+
+case ${1:-} in
+  path) printf '%s\n' "$folder" ;;
+  open)
+    mkdir -p -- "$folder"
+    setsid -f xdg-open "$folder" >/dev/null 2>&1
+    ;;
+  choose)
+    umami_folder_choose && umami_notify "Wallpapers now come from: $(umami_custom_folders | head -n1)"
+    ;;
+  set) umami_folder_set "${2:-}" ;;
+  *) umami_die "usage: umami-folder path|open|choose|set <folder>" ;;
+esac

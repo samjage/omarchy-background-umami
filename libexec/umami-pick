@@ -1,0 +1,72 @@
+#!/bin/bash
+# Show the images of a staged folder in Omarchy's own picker, with lighter
+# thumbnails. Omarchy makes 1536x864 thumbnails (about 5 MB each once decoded,
+# and the picker keeps every one it has shown). The picker draws the selected
+# image about 768 pixels wide, so we make 768x432 ones: the same look at a
+# quarter of the memory.
+#
+# Prints the chosen image, or nothing if the user canceled. Exits 1 if the
+# picker could not be reached, so the caller can fall back to Omarchy's own.
+#
+# No names are shown under the selected image, like Omarchy's own wallpaper
+# picker; typing still filters by file name.
+#
+# Usage: umami-pick <staged folder> [image to start on]
+#        umami-pick --prepare <staged folder>   only make the thumbnails
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+
+prepare=false
+if [[ ${1:-} == "--prepare" ]]; then prepare=true; shift; fi
+dir=${1:?usage: umami-pick [--prepare] <folder> [selected]}
+selected=${2:-}
+thumbs="$UMAMI_CACHE/thumbs"
+mkdir -p "$thumbs"
+
+# One row per image: "<image>\t<thumbnail>". A thumbnail is named after the
+# file's identity (device, inode, mtime, size), so a changed file gets a new one.
+rows=()
+make=()
+while IFS=$'\t' read -r key image; do
+  thumb="$thumbs/$key.jpg"
+  [[ -f $thumb ]] || make+=("$image" "$thumb")
+  rows+=("$image"$'\t'"$thumb")
+done < <(find -L "$dir" -mindepth 1 -maxdepth 1 -type f -printf '%D-%i-%T@-%s\t%p\n' | sort -t$'\t' -k2)
+
+if ((${#make[@]})); then
+  # The first look at a big folder takes a moment; say so instead of seeming stuck.
+  ((${#make[@]} > 160)) && ! $prepare && umami_notify "Preparing thumbnails (only the first time)"
+  printf '%s\0' "${make[@]}" | xargs -0 -n2 -P"$(nproc)" "$root/libexec/umami-thumb"
+fi
+show_picker() {
+  # An image whose thumbnail could not be made is left out, as Omarchy does.
+  list=""
+  for row in "${rows[@]}"; do
+    [[ -f ${row#*$'\t'} ]] && list+="$row"$'\n'
+  done
+  [[ -n $list ]] || return 1
+
+  selection=$(mktemp)
+  done_file=$(mktemp)
+  rm -f "$done_file"
+  trap 'rm -f "$selection" "$done_file"' EXIT
+
+  rows_b64=$(printf '%s' "${list%$'\n'}" | base64 -w 0)
+  result=$(omarchy-shell image-selector open "" "$rows_b64" "$selected" "$selection" "$done_file" false true) || return 1
+  [[ $result == "ok" ]] || return 1
+
+  # Wait for the answer, but not forever if the shell goes away.
+  waited=0
+  until [[ -e $done_file ]]; do
+    sleep 0.02
+    waited=$((waited + 1))
+    if ((waited % 100 == 0)) && [[ $(timeout 3 omarchy-shell shell ping 2>/dev/null) != "ok" ]]; then return 1; fi
+  done
+  if [[ -s $selection ]]; then cat "$selection"; fi
+}
+
+if ! $prepare; then
+  show_picker
+fi

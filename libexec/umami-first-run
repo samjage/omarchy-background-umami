@@ -1,0 +1,27 @@
+#!/bin/bash
+# Runs each time the plugin loads. If Background Umami is not set up yet, offer
+# the setup once, in Omarchy's floating terminal. Enabling a plugin otherwise
+# does nothing visible, and Omarchy never runs a plugin's installer for it.
+#
+# The offer is made once. Setting up, or removing Umami with umami-uninstall,
+# resets it.
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+source "$root/lib/menu.sh"
+source "$root/lib/hook.sh"
+
+# Taking the flag is the only step that can race (the shell may load the plugin
+# twice in a row), so it is done atomically: the loser leaves quietly.
+offer_setup() {
+  local offered="$UMAMI_STATE/offered"
+  mkdir -p "$UMAMI_STATE"
+  if ( set -o noclobber; : >"$offered" ) 2>/dev/null; then
+    omarchy-launch-floating-terminal-with-presentation "$root/bin/umami-install"
+  fi
+}
+
+if ! "$root/bin/umami-install" --check; then
+  offer_setup
+fi

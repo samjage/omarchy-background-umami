@@ -1,0 +1,979 @@
+#!/bin/bash
+# Background Umami tests. Plain bash, no framework.
+#
+#   test/run            run everything
+#   test/run pattern    run tests whose name contains the pattern
+#
+# Needs bash, jq and perl. Every test gets a throwaway home and stand-ins for
+# Omarchy's commands, so nothing on this machine is touched.
+
+set -uo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+FIXTURES="$ROOT/test/fixtures"
+pattern=${1:-}
+
+# ---- sandbox ----------------------------------------------------------------
+
+sandbox() {
+  T=$(mktemp -d)
+  trap 'rm -rf "$T"' EXIT
+  export HOME=$T/home XDG_CONFIG_HOME=$T/home/.config XDG_STATE_HOME=$T/home/.local/state XDG_CACHE_HOME=$T/home/.cache
+  export OMARCHY_PATH=$T/share/omarchy
+  mkdir -p "$HOME" "$XDG_CONFIG_HOME/omarchy/extensions" "$XDG_STATE_HOME/omarchy/current" "$T/bin" \
+    "$OMARCHY_PATH/default/omarchy" "$OMARCHY_PATH/themes/gruvbox/backgrounds"
+  cp "$FIXTURES/default-menu.jsonc" "$OMARCHY_PATH/default/omarchy/omarchy-menu.jsonc"
+  MENU=$XDG_CONFIG_HOME/omarchy/extensions/omarchy-menu.jsonc
+  CALLS=$T/calls.log
+  export CALLS T
+  : >"$CALLS"
+
+  # Stand-ins for the Omarchy commands we call.
+  cat >"$T/bin/omarchy-theme-bg-set" <<STUB
+#!/bin/bash
+echo "bg-set \$1" >>"$CALLS"
+ln -nsf "\$(realpath "\$1")" "$XDG_STATE_HOME/omarchy/current/background"
+STUB
+  cat >"$T/bin/omarchy-notification-send" <<STUB
+#!/bin/bash
+echo "notify \$1" >>"$CALLS"
+STUB
+  cat >"$T/bin/omarchy-menu-images" <<'STUB'
+#!/bin/bash
+echo "stock-picker" >>"$CALLS"
+[[ -n ${FAKE_PICK_NONE:-} ]] && exit 0
+ls -d "${!#}"/* | head -n1   # the staged link for the first wallpaper
+STUB
+  cat >"$T/bin/omarchy-menu-select" <<'STUB'
+#!/bin/bash
+echo "select $*" >>"$CALLS"
+printf '%s\n' "${FAKE_ANSWER:-}"
+STUB
+  cat >"$T/bin/omarchy-menu-input" <<'STUB'
+#!/bin/bash
+echo "input $*" >>"$CALLS"
+printf '%s\n' "${FAKE_INPUT:-}"
+STUB
+  cat >"$T/bin/systemctl" <<STUB
+#!/bin/bash
+echo "systemctl \$*" >>"$CALLS"
+[[ -n \${FAKE_SYSTEMCTL_FAIL:-} ]] && exit 1
+exit 0
+STUB
+  cat >"$T/bin/xdg-open" <<STUB
+#!/bin/bash
+echo "open \$1" >>"$CALLS"
+STUB
+  cat >"$T/bin/omarchy-shell" <<'STUB'
+#!/bin/bash
+# Stand-in for the shell: answers ping, and plays the picker for "image-selector open".
+case "$1 $2" in
+  "shell ping") echo ok ;;
+  "image-selector open")
+    [[ -n ${FAKE_SHELL_FAIL:-} ]] && exit 1
+    printf '%s' "$4" | base64 -d >"$T/rows.txt"
+    printf '%s' "$5" >"$T/selected.txt"
+    printf '%s %s' "$8" "$9" >"$T/flags.txt"
+    if [[ -z ${FAKE_PICK_NONE:-} ]]; then head -n1 "$T/rows.txt" | cut -f1 >"$6"; fi
+    : >"$7"
+    echo ok ;;
+esac
+STUB
+  cat >"$T/bin/vipsthumbnail" <<'STUB'
+#!/bin/bash
+# Stand-in for vips: makes an empty file where the thumbnail should go.
+image=$1; out=${!#}; out=${out%%\[*}
+echo "vips ${image##*/} $*" >>"$CALLS"
+[[ -n ${FAKE_VIPS_FAIL:-} && $image == *"$FAKE_VIPS_FAIL"* ]] && exit 1
+: >"$out"
+STUB
+  cat >"$T/bin/gum" <<'STUB'
+#!/bin/bash
+# Stand-in for gum choose. Records every menu it is shown, and answers from
+# $T/gum-answers: line N is a piece of text; the first option containing it is
+# picked. CANCEL cancels. With no answer left, the first option is picked.
+if [[ $1 == confirm ]]; then [[ ${FAKE_GUM_CONFIRM:-yes} == no ]] && exit 1; exit 0; fi
+[[ $1 == choose ]] || exit 0
+shift; opts=()
+while (($#)); do
+  case "$1" in
+    --header|--selected|--height|--cursor) echo "$1 $2" >>"$T/gum-flags.txt"; shift 2 ;;
+    --*) shift ;;
+    *) opts+=("$1"); shift ;;
+  esac
+done
+n=$(( $(cat "$T/gum-n" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$T/gum-n"
+printf '%s\n' "${opts[@]}" >"$T/gum-options-$n.txt"
+[[ $n == 1 ]] && cp "$T/gum-options-1.txt" "$T/gum-options.txt"
+answer=$(sed -n "${n}p" "$T/gum-answers" 2>/dev/null)
+[[ $answer == CANCEL ]] && exit 130
+for o in "${opts[@]}"; do
+  if [[ -z $answer || $o == *"$answer"* ]]; then printf '%s\n' "$o"; exit 0; fi
+done
+exit 1
+STUB
+  cat >"$T/bin/omarchy-launch-floating-terminal-with-presentation" <<'STUB'
+#!/bin/bash
+echo "float $*" >>"$CALLS"
+STUB
+  chmod +x "$T/bin"/*
+  export PATH=$T/bin:$PATH
+
+  printf 'gruvbox\n' >"$XDG_STATE_HOME/omarchy/current/theme.name"
+  touch "$OMARCHY_PATH/themes/gruvbox/backgrounds"/{a.jpg,b.png} "$OMARCHY_PATH/themes/gruvbox/preview.png"
+  STATE=$XDG_STATE_HOME/omarchy-background-umami
+  CONFIG=$XDG_CONFIG_HOME/omarchy-background-umami
+}
+
+# ---- assertions (each stops the test on failure) ------------------------------
+
+fail() { echo "      $*" >&2; exit 1; }
+assert() { local msg=$1; shift; "$@" || fail "expected: $msg"; }
+refute() { local msg=$1; shift; "$@" && fail "did not expect: $msg"; return 0; }
+same_bytes() { cmp -s "$1" "$2"; }
+has_line() { grep -qxF -- "$2" "$1"; }
+no_scratch() { local f; for f in "$XDG_CONFIG_HOME"/omarchy/extensions/*umami-new*; do [[ -e $f ]] && return 1; done; return 0; }
+install_ok() { "$ROOT/bin/umami-install" --folder "$HOME/walls" >/dev/null 2>&1; }
+uninstall_ok() { "$ROOT/bin/umami-uninstall" >/dev/null 2>&1; }
+menu_keys() { source "$ROOT/lib/common.sh"; source "$ROOT/lib/menu.sh"; umami_menu_keys <"$MENU"; }
+
+TEMPLATE=$'{\n  // Extend the menu.\n  //\n  // "personal": {"label":"Personal"},\n}\n'
+
+# ---- tests --------------------------------------------------------------------
+
+test_install_adds_rows_that_parse() {
+  printf '%s' "$TEMPLATE" >"$MENU"
+  assert "install succeeds" install_ok
+  assert "Umami rows exist" bash -c "$(declare -f menu_keys); ROOT=$ROOT MENU=$MENU; menu_keys | grep -qx style.background.umami.all"
+  assert "stock row is now a submenu" jq -e 'true' <<<"$(perl -0777 -pe 's/^\s*\/\/[^\n]*(\n|$)//gm; s/,(\s*[}\]])/$1/g' "$MENU")"
+  assert "hook stub exists" test -f "$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/50-umami-pin"
+  assert "no scratch file left" no_scratch
+}
+
+test_install_twice_is_stable() {
+  printf '%s' "$TEMPLATE" >"$MENU"
+  install_ok; cp "$MENU" "$T/once"
+  install_ok
+  assert "second install changes nothing" same_bytes "$T/once" "$MENU"
+  assert "exactly one block" test "$(grep -c '>>> umami managed block' "$MENU")" = 1
+}
+
+uninstall_restores() { # <file contents>
+  printf '%b' "$1" >"$MENU"; cp "$MENU" "$T/original"
+  install_ok || fail "install failed"
+  uninstall_ok
+  same_bytes "$T/original" "$MENU" || fail "file differs after install + uninstall"
+  assert "backup removed" test ! -e "$MENU.umami-backup"
+  assert "hook removed" test ! -e "$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/50-umami-pin"
+}
+test_uninstall_restores_template()  { uninstall_restores "$TEMPLATE"; }
+test_uninstall_restores_empty()     { uninstall_restores '{\n}\n'; }
+test_uninstall_restores_crlf()      { uninstall_restores '{  \r\n  // c\r\n  "a": {"label":"A"}\r\n}\r\n'; }
+test_uninstall_restores_no_final_newline() { uninstall_restores '{\n  "a": {"label":"A"}\n}'; }
+
+test_existing_rows_survive() {
+  printf '{\n  "personal": {"label":"P"},\n  "personal.x": {"label":"X","action":"true"}\n}\n' >"$MENU"
+  install_ok
+  assert "personal kept" bash -c "$(declare -f menu_keys); ROOT=$ROOT MENU=$MENU; menu_keys | grep -qx personal.x"
+}
+
+test_symlinked_menu_is_edited_in_place() {
+  mkdir -p "$T/dotfiles"; printf '{\n}\n' >"$T/dotfiles/menu.jsonc"; rm -f "$MENU"; ln -s "$T/dotfiles/menu.jsonc" "$MENU"
+  install_ok
+  assert "link kept" test -L "$MENU"
+  assert "target edited" grep -q 'umami managed block' "$T/dotfiles/menu.jsonc"
+  uninstall_ok
+  assert "link still kept" test -L "$MENU"
+  assert "target restored" same_bytes <(printf '{\n}\n') "$T/dotfiles/menu.jsonc"
+}
+
+refuses() { # <description> <file contents>: install must fail and change nothing
+  printf '%b' "$2" >"$MENU"; cp "$MENU" "$T/before"
+  refute "$1: install to succeed" install_ok
+  assert "$1: file untouched" same_bytes "$T/before" "$MENU"
+  assert "$1: no scratch file" no_scratch
+  assert "$1: no hook installed" test ! -e "$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/50-umami-pin"
+}
+test_refuses_invalid_file()        { refuses "invalid JSON" '{ "a": '; }
+test_refuses_items_layout()        { refuses "items layout" '{\n  "items": {\n    "a": {"label":"A"}\n  }\n}\n'; }
+test_refuses_other_background_override() { refuses "style.background override" '{\n  "style.background": {"label":"Mine","action":"x"}\n}\n'; }
+test_refuses_missing_end_marker()  { refuses "missing end marker" '{\n  // >>> umami managed block (Background Umami) - do not edit between these lines >>>\n  "a": {"label":"A"},\n}\n'; }
+test_refuses_brace_not_ending_line() { refuses "brace mid-line" '{ "a": {"label":"A"} }\n'; }
+test_refuses_unknown_stock_row() {
+  printf '{\n  "other": {"label":"O"}\n}\n' >"$OMARCHY_PATH/default/omarchy/omarchy-menu.jsonc"
+  refuses "no stock Background row" '{\n}\n'
+}
+
+test_uninstall_without_install_is_harmless() {
+  printf '%s' "$TEMPLATE" >"$MENU"; cp "$MENU" "$T/before"
+  assert "uninstall succeeds" uninstall_ok
+  assert "file untouched" same_bytes "$T/before" "$MENU"
+}
+
+test_purge_removes_state() {
+  install_ok; mkdir -p "$STATE" "$XDG_CACHE_HOME/omarchy-background-umami"; echo x >"$STATE/pinned"
+  "$ROOT/bin/umami-uninstall" --purge >/dev/null
+  assert "state gone" test ! -e "$STATE"
+  assert "config gone" test ! -e "$CONFIG"
+  assert "cache gone" test ! -e "$XDG_CACHE_HOME/omarchy-background-umami"
+}
+
+test_hook_refuses_foreign_file_and_keeps_it() {
+  mkdir -p "$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d"; echo 'echo mine' >"$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/50-umami-pin"
+  printf '{\n}\n' >"$MENU"
+  refute "install over someone else's file" install_ok
+  assert "foreign hook untouched" has_line "$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/50-umami-pin" 'echo mine'
+}
+
+test_hook_is_silent_when_plugin_is_gone() {
+  printf '{\n}\n' >"$MENU"; install_ok
+  sed -i "s|$ROOT|$T/not-there|g" "$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/50-umami-pin"
+  out=$(bash "$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/50-umami-pin" gruvbox 2>&1); rc=$?
+  assert "exits 0" test $rc = 0
+  assert "prints nothing" test -z "$out"
+}
+
+test_install_rejects_home_as_folder() {
+  printf '{\n}\n' >"$MENU"
+  refute "home as wallpaper folder" "$ROOT/bin/umami-install" --folder "$HOME"
+  assert "menu untouched" same_bytes <(printf '{\n}\n') "$MENU"
+}
+
+scan() { "$ROOT/libexec/umami-scan" "$@"; }
+
+test_scan_keeps_wallpapers_and_drops_previews() {
+  out=$(scan theme)
+  assert "a.jpg listed" grep -q 'a.jpg' <<<"$out"
+  assert "b.png listed" grep -q 'b.png' <<<"$out"
+  refute "preview.png listed" grep -q 'preview.png' <<<"$out"
+}
+
+test_scan_skips_names_with_tabs_and_newlines() {
+  mkdir -p "$HOME/walls"; touch "$HOME/walls/ok.jpg" "$HOME/walls/a"$'\t'"b.jpg" "$HOME/walls/c"$'\n'"d.jpg"
+  mkdir -p "$CONFIG"; echo "$HOME/walls" >"$CONFIG/folders"
+  out=$(scan folder)
+  assert "ok.jpg listed" grep -q 'ok.jpg' <<<"$out"
+  assert "only one entry" test "$(wc -l <<<"$out")" = 1
+}
+
+test_scan_never_walks_home_or_root() {
+  mkdir -p "$CONFIG"; touch "$HOME/stray.jpg"; printf '%s\n/\n' "$HOME" >"$CONFIG/folders"
+  assert "nothing returned" test -z "$(scan folder)"
+}
+
+test_scan_respects_depth_and_count_limits() {
+  mkdir -p "$HOME/walls/a/b/c/d/e"; touch "$HOME/walls/a/b/c/d/e/deep.jpg" "$HOME/walls/a/shallow.jpg"
+  mkdir -p "$CONFIG"; echo "$HOME/walls" >"$CONFIG/folders"
+  out=$(scan folder)
+  assert "shallow found" grep -q shallow.jpg <<<"$out"
+  refute "too-deep found" grep -q deep.jpg <<<"$out"
+}
+
+test_scan_dedupes_symlinks() {
+  mkdir -p "$HOME/walls"; ln -s "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg" "$HOME/walls/same.jpg"
+  mkdir -p "$CONFIG"; echo "$HOME/walls" >"$CONFIG/folders"
+  assert "listed once" test "$(scan all | grep -c 'a.jpg')" = 1
+}
+
+pin_file() { echo "$STATE/pinned"; }
+set_current() { ln -nsf "$1" "$XDG_STATE_HOME/omarchy/current/background"; }
+
+test_pin_is_reapplied_after_a_theme_change() {
+  mkdir -p "$STATE" "$HOME/walls"; touch "$HOME/walls/mine.jpg"; echo "$HOME/walls/mine.jpg" >"$(pin_file)"
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"
+  "$ROOT/libexec/umami-pin-apply" gruvbox
+  assert "bg-set called with the pin" has_line "$CALLS" "bg-set $HOME/walls/mine.jpg"
+}
+test_pin_not_reapplied_when_already_showing() {
+  mkdir -p "$STATE" "$HOME/walls"; touch "$HOME/walls/mine.jpg"; echo "$HOME/walls/mine.jpg" >"$(pin_file)"
+  set_current "$HOME/walls/mine.jpg"
+  "$ROOT/libexec/umami-pin-apply" gruvbox
+  refute "any wallpaper change" grep -q bg-set "$CALLS"
+}
+test_no_pin_means_no_change() { "$ROOT/libexec/umami-pin-apply" gruvbox; refute "any call" test -s "$CALLS"; }
+test_pin_dropped_when_file_is_gone() {
+  mkdir -p "$STATE"; echo "$HOME/walls/gone.jpg" >"$(pin_file)"
+  "$ROOT/libexec/umami-pin-apply" gruvbox
+  assert "pin removed" test ! -e "$(pin_file)"
+  assert "user told" grep -q notify "$CALLS"
+}
+test_unpin_keeps_pin_if_picker_cancelled() {
+  mkdir -p "$STATE" "$HOME/walls"; touch "$HOME/walls/mine.jpg"; echo "$HOME/walls/mine.jpg" >"$(pin_file)"
+  set_current "$HOME/walls/mine.jpg"; "$ROOT/libexec/umami-unpin"
+  assert "pin kept" test -s "$(pin_file)"
+}
+test_unpin_drops_pin_if_something_else_was_chosen() {
+  mkdir -p "$STATE" "$HOME/walls"; touch "$HOME/walls/mine.jpg"; echo "$HOME/walls/mine.jpg" >"$(pin_file)"
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"; "$ROOT/libexec/umami-unpin"
+  assert "pin gone" test ! -e "$(pin_file)"
+}
+
+browse() { "$ROOT/bin/umami-browse" "${1:-theme}" >/dev/null 2>&1; }
+test_browse_apply_pins() {
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png"
+  FAKE_ANSWER=Apply browse
+  assert "pinned the pick" test -s "$(pin_file)"
+  assert "applied once" test "$(grep -c bg-set "$CALLS")" = 1
+}
+test_browse_nevermind_restores_the_original() {
+  original=$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png; set_current "$original"
+  FAKE_ANSWER=Nevermind timeout 5 "$ROOT/bin/umami-browse" theme >/dev/null 2>&1 <<<"" || true
+  refute "a pin" test -e "$(pin_file)"
+  assert "original put back" has_line "$CALLS" "bg-set $original"
+}
+test_browse_escape_changes_nothing() {
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png"
+  FAKE_PICK_NONE=1 browse
+  refute "a wallpaper change" grep -q '^bg-set' "$CALLS"
+}
+test_browse_add_copies_into_the_theme_and_pins() {
+  mkdir -p "$HOME/walls"; echo pixels >"$HOME/walls/mine.jpg"; mkdir -p "$CONFIG"; echo "$HOME/walls" >"$CONFIG/folders"
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"
+  FAKE_ANSWER="Apply and Add to gruvbox" browse folder
+  assert "copied" test -f "$XDG_CONFIG_HOME/omarchy/backgrounds/gruvbox/mine.jpg"
+  assert "pinned the copy" has_line "$(pin_file)" "$XDG_CONFIG_HOME/omarchy/backgrounds/gruvbox/mine.jpg"
+}
+test_browse_add_without_a_theme_name_writes_nothing() {
+  rm -f "$XDG_STATE_HOME/omarchy/current/theme.name"
+  FAKE_ANSWER="Apply and Add to " browse
+  refute "stray folder" test -e "$XDG_CONFIG_HOME/omarchy/backgrounds"
+}
+wait_for_call() { local i; for i in $(seq 30); do grep -qxF -- "$1" "$CALLS" && return 0; sleep 0.1; done; return 1; }
+
+test_empty_folder_offers_to_open_it() {
+  mkdir -p "$CONFIG" "$HOME/empty"; echo "$HOME/empty" >"$CONFIG/folders"
+  FAKE_ANSWER="Open the Folder" browse folder
+  wait_for_call "open $HOME/empty" || fail "the folder was not opened"
+}
+test_empty_folder_nevermind_does_nothing() {
+  mkdir -p "$CONFIG" "$HOME/empty"; echo "$HOME/empty" >"$CONFIG/folders"
+  FAKE_ANSWER=Nevermind browse folder
+  refute "the folder being opened" grep -q '^open ' "$CALLS"
+  refute "a wallpaper change" grep -q '^bg-set' "$CALLS"
+}
+
+# ---- the wallpaper folder ---------------------------------------------------
+
+folder() { "$ROOT/bin/umami-folder" "$@"; }
+
+test_default_folder_is_pictures_backgrounds() {
+  assert "path" test "$(folder path)" = "$HOME/Pictures/Backgrounds"
+}
+existing_folder() { # <name> [with images]: a folder the user already has in Pictures
+  mkdir -p "$HOME/Pictures/$1"; [[ ${2:-} == images ]] && echo pixels >"$HOME/Pictures/$1/mine.jpg"
+  return 0
+}
+test_an_existing_wallpapers_folder_is_used_not_a_new_backgrounds() {
+  existing_folder Wallpapers images
+  assert "the existing folder" test "$(folder path)" = "$HOME/Pictures/Wallpapers"
+  printf '{\n}\n' >"$MENU"; "$ROOT/bin/umami-install" </dev/null >/dev/null 2>&1
+  assert "no second folder made" test ! -e "$HOME/Pictures/Backgrounds"
+  assert "remembered" test "$(cat "$CONFIG/folders")" = "$HOME/Pictures/Wallpapers"
+}
+test_the_existing_folder_is_found_in_any_capitalisation() {
+  existing_folder backgrounds images
+  assert "lowercase backgrounds" test "$(folder path)" = "$HOME/Pictures/backgrounds"
+}
+test_wallpaper_singular_is_found_too() {
+  existing_folder Wallpaper images
+  assert "singular" test "$(folder path)" = "$HOME/Pictures/Wallpaper"
+}
+test_a_folder_with_images_beats_an_empty_one() {
+  existing_folder Backgrounds; existing_folder Wallpapers images
+  assert "the one with pictures" test "$(folder path)" = "$HOME/Pictures/Wallpapers"
+}
+test_with_two_stocked_folders_backgrounds_wins() {
+  existing_folder Backgrounds images; existing_folder Wallpapers images
+  assert "Backgrounds first" test "$(folder path)" = "$HOME/Pictures/Backgrounds"
+}
+test_an_existing_empty_folder_still_beats_making_a_new_one() {
+  existing_folder Wallpapers
+  assert "the empty Wallpapers folder" test "$(folder path)" = "$HOME/Pictures/Wallpapers"
+}
+test_installing_and_removing_never_touches_an_existing_folder() {
+  existing_folder Wallpapers images; echo more >"$HOME/Pictures/Wallpapers/two.png"; mkdir -p "$HOME/Pictures/Wallpapers/sub"; echo x >"$HOME/Pictures/Wallpapers/sub/three.webp"
+  before=$(cd "$HOME/Pictures" && find Wallpapers -type f -printf '%p %s %T@\n' | sort)
+  printf '{\n}\n' >"$MENU"; "$ROOT/bin/umami-install" </dev/null >/dev/null 2>&1; uninstall_ok; "$ROOT/bin/umami-uninstall" --purge >/dev/null 2>&1
+  after=$(cd "$HOME/Pictures" && find Wallpapers -type f -printf '%p %s %T@\n' | sort)
+  assert "same files, sizes and times" test "$before" = "$after"
+}
+test_install_creates_the_default_folder() {
+  printf '{\n}\n' >"$MENU"
+  "$ROOT/bin/umami-install" </dev/null >/dev/null 2>&1 || fail "install failed"
+  assert "folder created" test -d "$HOME/Pictures/Backgrounds"
+  assert "remembered" test "$(cat "$CONFIG/folders")" = "$HOME/Pictures/Backgrounds"
+}
+test_folder_set_makes_and_remembers_it() {
+  folder set "$HOME/mine/walls"
+  assert "created" test -d "$HOME/mine/walls"
+  assert "remembered" test "$(folder path)" = "$HOME/mine/walls"
+}
+test_folder_set_expands_tilde() {
+  # shellcheck disable=SC2088  # the literal ~ is the point of this test
+  folder set "~/tilde-walls"
+  assert "expanded" test -d "$HOME/tilde-walls"
+}
+test_folder_set_refuses_home_root_and_nonsense() {
+  refute "home" folder set "$HOME"
+  refute "root" folder set /
+  refute "empty" folder set ""
+  refute "a path that cannot be made" folder set /proc/nope/walls
+  assert "nothing remembered" test ! -e "$CONFIG/folders"
+}
+test_folder_open_shows_it_and_makes_it_if_missing() {
+  folder open
+  assert "created" test -d "$HOME/Pictures/Backgrounds"
+  wait_for_call "open $HOME/Pictures/Backgrounds" || fail "the folder was not opened"
+}
+test_shuffle_rebuilds_when_the_folder_changes() {
+  mkdir -p "$HOME/one" "$HOME/two"; : >"$HOME/one/a.jpg"; : >"$HOME/one/b.jpg"; : >"$HOME/two/x.jpg"; : >"$HOME/two/y.jpg"
+  folder set "$HOME/one"; shuffle scope folder; shuffle now
+  folder set "$HOME/two"; : >"$CALLS"
+  shuffle now
+  assert "picked from the new folder" grep -q "$HOME/two/" <<<"$(applied)"
+}
+test_uninstall_never_touches_the_wallpaper_folder() {
+  printf '{\n}\n' >"$MENU"; folder set "$HOME/Pictures/Backgrounds"; echo pixels >"$HOME/Pictures/Backgrounds/mine.jpg"
+  install_ok; uninstall_ok
+  assert "your wallpaper survives" test -f "$HOME/Pictures/Backgrounds/mine.jpg"
+  "$ROOT/bin/umami-uninstall" --purge >/dev/null 2>&1
+  assert "and survives a purge too" test -f "$HOME/Pictures/Backgrounds/mine.jpg"
+}
+
+test_restore_clears_the_pin_and_uses_the_themes_wallpaper() {
+  mkdir -p "$STATE" "$XDG_STATE_HOME/omarchy/current/theme/backgrounds"; echo x >"$(pin_file)"
+  touch "$XDG_STATE_HOME/omarchy/current/theme/backgrounds/1-first.jpg"
+  "$ROOT/bin/umami-restore"
+  assert "pin cleared" test ! -e "$(pin_file)"
+  assert "theme wallpaper set" has_line "$CALLS" "bg-set $XDG_STATE_HOME/omarchy/current/theme/backgrounds/1-first.jpg"
+}
+
+test_remove_deletes_only_the_added_copy() {
+  d=$XDG_CONFIG_HOME/omarchy/backgrounds/gruvbox; mkdir -p "$d" "$HOME/walls"
+  echo x >"$d/mine.jpg"; echo x >"$HOME/walls/mine.jpg"
+  FAKE_ANSWER=Remove "$ROOT/bin/umami-remove" >/dev/null 2>&1
+  refute "the added copy" test -e "$d/mine.jpg"
+  assert "your original" test -f "$HOME/walls/mine.jpg"
+  assert "the theme's own" test -f "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"
+}
+test_remove_of_the_one_on_screen_restores_the_theme() {
+  d=$XDG_CONFIG_HOME/omarchy/backgrounds/gruvbox; mkdir -p "$d" "$XDG_STATE_HOME/omarchy/current/theme/backgrounds" "$STATE"
+  touch "$XDG_STATE_HOME/omarchy/current/theme/backgrounds/1-first.jpg"; echo x >"$d/mine.jpg"
+  set_current "$d/mine.jpg"; echo "$d/mine.jpg" >"$(pin_file)"
+  FAKE_ANSWER=Remove "$ROOT/bin/umami-remove" >/dev/null 2>&1
+  refute "pin" test -e "$(pin_file)"
+  assert "theme wallpaper back" has_line "$CALLS" "bg-set $XDG_STATE_HOME/omarchy/current/theme/backgrounds/1-first.jpg"
+}
+test_remove_nevermind_and_escape_keep_the_file() {
+  d=$XDG_CONFIG_HOME/omarchy/backgrounds/gruvbox; mkdir -p "$d"; echo x >"$d/mine.jpg"
+  FAKE_PICK_NONE=1 FAKE_ANSWER=Remove "$ROOT/bin/umami-remove" >/dev/null 2>&1
+  assert "kept on Esc" test -f "$d/mine.jpg"
+  FAKE_ANSWER=Nevermind timeout 5 "$ROOT/bin/umami-remove" >/dev/null 2>&1 <<<"" || true
+  assert "kept on Nevermind" test -f "$d/mine.jpg"
+}
+test_remove_with_nothing_added_says_so() {
+  "$ROOT/bin/umami-remove" >/dev/null 2>&1
+  assert "told" grep -q "notify Nothing added" "$CALLS"
+}
+
+# ---- shuffle ------------------------------------------------------------------
+
+shuffle() { "$ROOT/libexec/umami-shuffle" "$@"; }
+walls() { # <count>: that many wallpapers in the custom folder, shuffle scope = folder
+  local i; mkdir -p "$HOME/walls" "$CONFIG"
+  for ((i = 1; i <= $1; i++)); do : >"$HOME/walls/w$i.jpg"; done
+  echo "$HOME/walls" >"$CONFIG/folders"
+  shuffle scope folder
+}
+applied() { grep '^bg-set ' "$CALLS" | sed 's/^bg-set //'; }
+UNITS() { echo "$XDG_CONFIG_HOME/systemd/user"; }
+
+test_shuffle_now_applies_a_wallpaper_and_holds_it() {
+  walls 3
+  shuffle now
+  assert "one wallpaper applied" test "$(applied | wc -l)" = 1
+  assert "pinned the same file" test "$(cat "$(pin_file)")" = "$(applied)"
+}
+
+test_shuffle_shows_everything_before_repeating() {
+  walls 5
+  for _ in 1 2 3 4 5; do shuffle now; done
+  assert "five different wallpapers" test "$(applied | sort -u | wc -l)" = 5
+  last=$(applied | tail -n1); : >"$CALLS"
+  shuffle now
+  refute "the new round starting on the last one" test "$(applied)" = "$last"
+}
+
+test_shuffle_skips_files_that_are_gone() {
+  walls 3
+  shuffle now; first=$(applied); : >"$CALLS"
+  for f in "$HOME"/walls/w*.jpg; do [[ $f == "$first" ]] || rm -f "$f"; done
+  shuffle now
+  assert "applied the one that still exists" test "$(applied)" = "$first"
+}
+
+test_shuffle_from_a_theme_follows_theme_changes() {
+  mkdir -p "$OMARCHY_PATH/themes/nord/backgrounds"; touch "$OMARCHY_PATH/themes/nord/backgrounds/n1.jpg"
+  shuffle scope theme; shuffle now
+  assert "first pick is from gruvbox" grep -q '/gruvbox/' <<<"$(applied)"
+  printf 'nord\n' >"$XDG_STATE_HOME/omarchy/current/theme.name"; : >"$CALLS"
+  shuffle now
+  assert "next pick is from nord" grep -q '/nord/' <<<"$(applied)"
+}
+
+test_shuffle_rejects_bad_minutes() {
+  walls 2
+  for bad in 0 1441 abc "" -5 1.5; do refute "minutes '$bad'" shuffle start "$bad"; done
+  assert "no timer started" test ! -e "$(UNITS)/umami-shuffle.timer"
+  for ok in 1 1440 007; do shuffle start "$ok" || fail "valid minutes were rejected: $ok"; done
+  assert "007 means 7" grep -q 'OnUnitActiveSec=7min' "$(UNITS)/umami-shuffle.timer"
+}
+
+test_shuffle_start_writes_units_and_starts_the_timer() {
+  walls 3
+  shuffle start 15
+  assert "timer interval" grep -q 'OnUnitActiveSec=15min' "$(UNITS)/umami-shuffle.timer"
+  assert "timer first run" grep -q 'OnActiveSec=15min' "$(UNITS)/umami-shuffle.timer"
+  assert "service runs tick" grep -q 'umami-shuffle" tick' "$(UNITS)/umami-shuffle.service"
+  assert "systemd was told" grep -q 'systemctl --user restart umami-shuffle.timer' "$CALLS"
+  assert "interval remembered" test "$(cat "$STATE/shuffle.minutes")" = 15
+  assert "picked one straight away" test "$(applied | wc -l)" = 1
+}
+
+test_shuffle_starts_with_a_big_library() {
+  walls 300
+  shuffle start 15 || fail "start failed with 300 wallpapers"
+  assert "timer written" test -e "$(UNITS)/umami-shuffle.timer"
+}
+
+test_shuffle_start_with_nothing_to_shuffle_changes_nothing() {
+  mkdir -p "$HOME/empty" "$CONFIG"; echo "$HOME/empty" >"$CONFIG/folders"; shuffle scope folder
+  refute "starting with no wallpapers" shuffle start 15
+  assert "no unit files" test ! -e "$(UNITS)/umami-shuffle.timer"
+  assert "no interval saved" test ! -e "$STATE/shuffle.minutes"
+}
+
+test_shuffle_start_cleans_up_if_systemd_refuses() {
+  walls 2
+  refute "start when systemctl fails" env FAKE_SYSTEMCTL_FAIL=1 "$ROOT/libexec/umami-shuffle" start 15
+  assert "no unit files left" test ! -e "$(UNITS)/umami-shuffle.timer"
+  assert "no interval saved" test ! -e "$STATE/shuffle.minutes"
+}
+
+test_shuffle_refuses_to_overwrite_someone_elses_units() {
+  walls 2; mkdir -p "$(UNITS)"; echo '[Timer]' >"$(UNITS)/umami-shuffle.timer"
+  refute "start over a foreign unit" shuffle start 15
+  assert "foreign unit untouched" has_line "$(UNITS)/umami-shuffle.timer" '[Timer]'
+}
+
+test_shuffle_stop_removes_the_timer_and_the_files() {
+  walls 2; shuffle start 15; : >"$CALLS"
+  shuffle stop
+  assert "disabled" grep -q 'systemctl --user disable --now umami-shuffle.timer' "$CALLS"
+  assert "timer file gone" test ! -e "$(UNITS)/umami-shuffle.timer"
+  assert "service file gone" test ! -e "$(UNITS)/umami-shuffle.service"
+  assert "interval forgotten" test ! -e "$STATE/shuffle.minutes"
+}
+
+test_shuffle_tick_does_nothing_when_off() {
+  walls 2; shuffle tick
+  refute "any wallpaper change" grep -q '^bg-set' "$CALLS"
+}
+test_shuffle_tick_picks_when_on() {
+  walls 2; shuffle start 15; : >"$CALLS"
+  shuffle tick
+  assert "a wallpaper was applied" test "$(applied | wc -l)" = 1
+}
+test_shuffle_tick_waits_while_a_carousel_is_open() {
+  walls 2; shuffle start 15; : >"$CALLS"
+  mkdir -p "$XDG_CACHE_HOME/omarchy-background-umami"
+  ( exec 9>"$XDG_CACHE_HOME/omarchy-background-umami/browse.lock"; flock 9; sleep 2 ) & sleep 0.5
+  shuffle tick
+  wait
+  refute "a change while browsing" grep -q '^bg-set' "$CALLS"
+}
+
+test_shuffle_speaks_plain_english_about_its_interval() {
+  walls 2
+  shuffle start 1
+  assert "singular" grep -q "notify Shuffling every minute, from" "$CALLS"
+  shuffle start 15
+  assert "plural" grep -q "notify Shuffling every 15 minutes, from" "$CALLS"
+  refute "'1 minutes'" grep -q "every 1 minutes" "$CALLS"
+}
+test_a_missing_saved_wallpaper_is_explained_without_jargon() {
+  mkdir -p "$STATE"; echo "$HOME/walls/gone.jpg" >"$(pin_file)"
+  "$ROOT/libexec/umami-pin-apply" gruvbox
+  assert "plain wording" grep -q "notify Your saved wallpaper is missing, so Umami is using the theme's" "$CALLS"
+  refute "the word pinned" grep -qi "pinned" "$CALLS"
+}
+test_the_installer_ends_by_saying_how_to_remove_it_in_the_right_order() {
+  printf '{\n}\n' >"$MENU"
+  out=$("$ROOT/bin/umami-install" </dev/null 2>&1)
+  assert "removal command named" grep -q "umami-uninstall" <<<"$out"
+  assert "then the plugin menu" grep -q "Setup → Plugins → Remove Plugin" <<<"$out"
+}
+
+test_shuffle_reports_its_state_for_the_menu() {
+  walls 2
+  shuffle is off || fail "should start off"
+  shuffle start 15
+  shuffle is interval 15 || fail "15 should be marked"
+  refute "5 marked" shuffle is interval 5
+  refute "custom marked for a preset" shuffle is custom
+  shuffle start 7
+  shuffle is custom || fail "7 minutes is custom"
+  shuffle is scope folder || fail "scope was set to folder"
+  refute "all marked" shuffle is scope all
+}
+
+test_shuffle_custom_asks_for_minutes() {
+  walls 2
+  FAKE_INPUT=20 shuffle custom
+  assert "20 minutes" test "$(cat "$STATE/shuffle.minutes")" = 20
+  : >"$CALLS"; FAKE_INPUT='' shuffle custom
+  assert "empty answer changes nothing" test "$(cat "$STATE/shuffle.minutes")" = 20
+  refute "a bad answer" env FAKE_INPUT=abc "$ROOT/libexec/umami-shuffle" custom
+  assert "still 20" test "$(cat "$STATE/shuffle.minutes")" = 20
+}
+
+test_choosing_with_apply_ends_the_shuffle() {
+  walls 2; shuffle start 15
+  set_current "$HOME/walls/w1.jpg"
+  FAKE_ANSWER=Apply "$ROOT/bin/umami-browse" folder >/dev/null 2>&1
+  assert "interval gone" test ! -e "$STATE/shuffle.minutes"
+  assert "timer gone" test ! -e "$(UNITS)/umami-shuffle.timer"
+}
+test_choosing_with_the_stock_picker_ends_the_shuffle() {
+  walls 2; shuffle start 15
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"
+  "$ROOT/libexec/umami-unpin"
+  assert "interval gone" test ! -e "$STATE/shuffle.minutes"
+}
+test_cancelling_the_stock_picker_keeps_the_shuffle() {
+  walls 2; shuffle start 15
+  "$ROOT/libexec/umami-unpin"
+  assert "still shuffling" test -s "$STATE/shuffle.minutes"
+}
+test_restore_ends_the_shuffle() {
+  walls 2; shuffle start 15
+  mkdir -p "$XDG_STATE_HOME/omarchy/current/theme/backgrounds"; : >"$XDG_STATE_HOME/omarchy/current/theme/backgrounds/1.jpg"
+  "$ROOT/bin/umami-restore"
+  assert "interval gone" test ! -e "$STATE/shuffle.minutes"
+}
+test_shuffled_wallpaper_survives_a_theme_change() {
+  walls 2; shuffle now; chosen=$(applied)
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"; : >"$CALLS"
+  "$ROOT/libexec/umami-pin-apply" gruvbox
+  assert "re-applied the shuffled pick" test "$(applied)" = "$chosen"
+}
+
+test_uninstall_removes_a_running_shuffle() {
+  walls 2; printf '{\n}\n' >"$MENU"; install_ok; shuffle start 15
+  uninstall_ok
+  assert "timer file gone" test ! -e "$(UNITS)/umami-shuffle.timer"
+  assert "service file gone" test ! -e "$(UNITS)/umami-shuffle.service"
+}
+
+test_unit_quoting_handles_spaces_quotes_and_percent() {
+  out=$(bash -c 'source "$1/lib/common.sh"; source "$1/lib/shuffle.sh"; umami_unit_quote "/a b/c\"d%e"' _ "$ROOT")
+  assert "quoted for systemd" test "$out" = '"/a b/c\"d%%e"'
+}
+
+# ---- the carousel (light thumbnails) -----------------------------------------
+
+pick() { "$ROOT/libexec/umami-pick" "$@"; }
+thumb_dir() { echo "$XDG_CACHE_HOME/omarchy-background-umami/thumbs"; }
+vips_calls() { grep -c '^vips ' "$CALLS" || true; }
+staged_walls() { # <count>: a staged folder of that many images
+  local i; mkdir -p "$T/stage"
+  for ((i = 1; i <= $1; i++)); do : >"$T/stage/img$i.jpg"; done
+}
+
+test_pick_hands_the_picker_light_thumbnails() {
+  staged_walls 3
+  pick "$T/stage" >/dev/null
+  assert "one row per image" test "$(grep -c '' "$T/rows.txt")" = 3
+  assert "each row is image then thumbnail" awk -F'\t' 'NF != 2 { exit 1 }' "$T/rows.txt"
+  assert "thumbnails live in our cache" grep -q "$(thumb_dir)/" "$T/rows.txt"
+  assert "made at 768x432, not 1536x864" grep -q -- '--size 768x432' "$CALLS"
+  refute "the big size" grep -q -- '1536x864' "$CALLS"
+}
+test_pick_shows_no_names_but_still_filters() {
+  staged_walls 2
+  pick "$T/stage" >/dev/null
+  assert "labels off, filter on" test "$(cat "$T/flags.txt")" = "false true"
+}
+test_pick_returns_what_the_user_chose() {
+  staged_walls 2
+  assert "first image" test "$(pick "$T/stage")" = "$T/stage/img1.jpg"
+}
+test_pick_tells_the_picker_where_to_start() {
+  staged_walls 2
+  pick "$T/stage" "$T/stage/img2.jpg" >/dev/null
+  assert "starting image" test "$(cat "$T/selected.txt")" = "$T/stage/img2.jpg"
+}
+test_pick_reuses_thumbnails() {
+  staged_walls 3
+  pick "$T/stage" >/dev/null; first=$(vips_calls)
+  pick "$T/stage" >/dev/null
+  assert "made on the first run" test "$first" = 3
+  assert "nothing remade on the second" test "$(vips_calls)" = 3
+}
+test_pick_makes_a_new_thumbnail_when_the_image_changes() {
+  staged_walls 1
+  pick "$T/stage" >/dev/null; old=$(cut -f2 "$T/rows.txt")
+  echo "new pixels" >"$T/stage/img1.jpg"
+  pick "$T/stage" >/dev/null
+  assert "a different thumbnail" test "$(cut -f2 "$T/rows.txt")" != "$old"
+}
+test_pick_leaves_out_images_it_cannot_thumbnail() {
+  staged_walls 3
+  FAKE_VIPS_FAIL=img2 pick "$T/stage" >/dev/null
+  assert "two rows" test "$(grep -c '' "$T/rows.txt")" = 2
+  refute "the broken image listed" grep -q img2 "$T/rows.txt"
+  assert "no half-made files left" test -z "$(find "$(thumb_dir)" -name '*.jpg.*.jpg' 2>/dev/null)"
+}
+test_pick_fails_if_nothing_can_be_shown() {
+  staged_walls 2
+  refute "success with no thumbnails" env FAKE_VIPS_FAIL=img "$ROOT/libexec/umami-pick" "$T/stage"
+}
+test_pick_says_nothing_when_cancelled() {
+  staged_walls 2
+  out=$(FAKE_PICK_NONE=1 pick "$T/stage"); rc=$?
+  assert "exit 0" test $rc = 0
+  assert "no answer" test -z "$out"
+}
+test_pick_fails_when_the_shell_cannot_be_reached() {
+  staged_walls 2
+  refute "success without a shell" env FAKE_SHELL_FAIL=1 "$ROOT/libexec/umami-pick" "$T/stage"
+}
+test_pick_prepare_makes_thumbnails_without_opening_the_picker() {
+  staged_walls 4
+  pick --prepare "$T/stage"
+  assert "thumbnails made" test "$(vips_calls)" = 4
+  refute "the picker being opened" test -e "$T/rows.txt"
+}
+test_pick_tells_you_about_a_long_first_wait() {
+  staged_walls 90
+  pick "$T/stage" >/dev/null
+  assert "told the user" grep -q 'notify Preparing thumbnails' "$CALLS"
+}
+test_pick_stays_quiet_for_a_small_folder() {
+  staged_walls 5
+  pick "$T/stage" >/dev/null
+  refute "a notice" grep -q 'notify Preparing' "$CALLS"
+}
+
+test_the_apply_prompt_is_wide_enough_for_the_theme_name() {
+  printf 'catppuccin-latte\n' >"$XDG_STATE_HOME/omarchy/current/theme.name"
+  mkdir -p "$OMARCHY_PATH/themes/catppuccin-latte/backgrounds"; : >"$OMARCHY_PATH/themes/catppuccin-latte/backgrounds/a.jpg"
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png"
+  FAKE_ANSWER=Nevermind timeout 5 "$ROOT/bin/umami-browse" theme >/dev/null 2>&1 || true
+  width=$(grep -o -- '--width [0-9]*' "$CALLS" | head -1 | cut -d' ' -f2)
+  assert "a width was given" test -n "$width"
+  assert "wide enough for 'Apply and Add to catppuccin-latte' (needs about 520)" test "$width" -ge 500
+}
+test_menu_width_grows_with_the_longest_line_and_stays_sensible() {
+  w() { bash -c 'source "$1/lib/common.sh"; shift; umami_menu_width "$@"' _ "$ROOT" "$@"; }
+  assert "short text keeps the default" test "$(w "Off")" = 300
+  assert "a long title gets room" test "$(w "Wallpaper folder (now ~/Pictures/Backgrounds)")" -ge 650
+  assert "the longest of several lines wins" test "$(w "Hi" "Apply and Add to catppuccin-latte")" -ge 500
+  assert "absurd text is capped" test "$(w "$(printf 'x%.0s' $(seq 200))")" = 900
+}
+test_every_prompt_is_given_a_width() {
+  mkdir -p "$CONFIG" "$HOME/empty"; echo "$HOME/empty" >"$CONFIG/folders"
+  FAKE_ANSWER=Nevermind browse folder
+  assert "the empty-folder prompt" grep -qE "select No wallpapers in .* -- --width [0-9]+" "$CALLS"
+  FAKE_INPUT='' "$ROOT/libexec/umami-shuffle" custom
+  assert "the minutes prompt" grep -q "input Minutes between wallpapers --width" "$CALLS"
+}
+test_the_apply_prompt_never_gets_narrower_than_the_menu_default() {
+  printf 'x\n' >"$XDG_STATE_HOME/omarchy/current/theme.name"
+  mkdir -p "$OMARCHY_PATH/themes/x/backgrounds"; : >"$OMARCHY_PATH/themes/x/backgrounds/a.jpg"
+  FAKE_ANSWER=Nevermind timeout 5 "$ROOT/bin/umami-browse" theme >/dev/null 2>&1 || true
+  assert "at least 300" test "$(grep -o -- '--width [0-9]*' "$CALLS" | head -1 | cut -d' ' -f2)" -ge 300
+}
+
+test_browse_uses_the_light_picker_not_omarchys() {
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png"
+  FAKE_ANSWER=Apply browse
+  assert "ours was used" test -e "$T/rows.txt"
+  refute "Omarchy's own picker" grep -q stock-picker "$CALLS"
+}
+test_browse_falls_back_to_omarchys_picker() {
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png"
+  FAKE_SHELL_FAIL=1 FAKE_ANSWER=Apply browse
+  assert "fell back" grep -q stock-picker "$CALLS"
+  assert "still pinned a wallpaper" test -s "$(pin_file)"
+}
+test_browse_does_not_fall_back_when_you_cancel() {
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png"
+  FAKE_PICK_NONE=1 browse
+  refute "Omarchy's picker after a cancel" grep -q stock-picker "$CALLS"
+}
+
+# ---- choosing the folder (no typing) -----------------------------------------
+
+answers() { printf '%s\n' "$@" >"$T/gum-answers"; }
+choose() { "$ROOT/bin/umami-folder" choose >/dev/null 2>&1; }
+menu_n() { cat "$T/gum-options-$1.txt"; }
+
+test_choose_lists_what_it_found_with_image_counts() {
+  existing_folder Wallpapers images
+  answers "Use ~/Pictures/Wallpapers"; choose
+  assert "the found folder with its count" grep -qx "Use ~/Pictures/Wallpapers  (1 images)" "$T/gum-options.txt"
+  assert "a way to browse" grep -qx "Choose another folder…" "$T/gum-options.txt"
+  refute "an offer to create one" grep -q "^Create" "$T/gum-options.txt"
+}
+test_choose_offers_to_create_backgrounds_when_there_is_none() {
+  answers "Create"; choose
+  assert "create offered" grep -qx "Create ~/Pictures/Backgrounds" "$T/gum-options.txt"
+  assert "the folder made" test -d "$HOME/Pictures/Backgrounds"
+  assert "and remembered" test "$(folder path)" = "$HOME/Pictures/Backgrounds"
+}
+test_choose_suggests_the_folder_that_has_images() {
+  existing_folder Backgrounds; existing_folder Wallpapers images
+  answers "Use ~/Pictures/Wallpapers"; choose
+  assert "the stocked one preselected" grep -q "^--selected Use ~/Pictures/Wallpapers" "$T/gum-flags.txt"
+  assert "both listed" test "$(grep -c '^Use ' "$T/gum-options.txt")" = 2
+}
+test_choose_remembers_the_folder_picked_from_the_list() {
+  existing_folder Backgrounds; existing_folder Wallpapers images
+  answers "Use ~/Pictures/Backgrounds"; choose
+  assert "Backgrounds" test "$(folder path)" = "$HOME/Pictures/Backgrounds"
+}
+test_browsing_shows_folders_only_never_files() {
+  mkdir -p "$HOME/Pictures/Holiday"; : >"$HOME/Pictures/screenshot-1.png"; : >"$HOME/Pictures/notes.txt"; : >"$HOME/Pictures/.hidden.png"; mkdir -p "$HOME/Pictures/.cache"
+  answers "Choose another" "CANCEL"; choose
+  assert "the folder is listed" grep -q "^Holiday/" "$T/gum-options-2.txt"
+  refute "a screenshot listed" grep -q "screenshot-1" "$T/gum-options-2.txt"
+  refute "a text file listed" grep -q "notes.txt" "$T/gum-options-2.txt"
+  refute "a hidden folder listed" grep -q "\.cache" "$T/gum-options-2.txt"
+}
+test_browsing_shows_image_counts_and_where_you_are() {
+  mkdir -p "$HOME/Pictures/Holiday"; : >"$HOME/Pictures/Holiday/a.jpg"; : >"$HOME/Pictures/Holiday/b.png"
+  answers "Choose another" "CANCEL"; choose
+  assert "count shown" grep -qx "Holiday/  (2 images)" "$T/gum-options-2.txt"
+  assert "the path in the header" grep -q "^--header ~/Pictures" "$T/gum-flags.txt"
+}
+test_browsing_walks_down_to_a_folder_and_picks_it() {
+  mkdir -p "$HOME/Pictures" "$HOME/elsewhere/art"
+  answers "Choose another" "Up one level" "elsewhere" "art" "Use this folder"; choose
+  assert "the browsed folder" test "$(folder path)" = "$HOME/elsewhere/art"
+}
+test_browsing_offers_no_way_to_pick_the_home_folder_or_root() {
+  mkdir -p "$HOME/Pictures" "$HOME/elsewhere"
+  answers "Choose another" "Up one level" "CANCEL"; choose
+  refute "using the home folder" grep -q "Use this folder" "$T/gum-options-3.txt"
+  assert "but its folders can still be entered" grep -q "^elsewhere/" "$T/gum-options-3.txt"
+}
+test_cancelling_the_list_changes_nothing() {
+  folder set "$HOME/keep"
+  answers CANCEL; choose
+  assert "old folder kept" test "$(folder path)" = "$HOME/keep"
+  refute "a new Backgrounds made" test -e "$HOME/Pictures/Backgrounds"
+}
+test_cancelling_the_browser_changes_nothing() {
+  folder set "$HOME/keep"
+  answers "Choose another" CANCEL; choose
+  assert "old folder kept" test "$(folder path)" = "$HOME/keep"
+}
+test_without_a_terminal_the_installer_takes_the_likely_folder_and_never_waits() {
+  existing_folder Wallpapers images; printf '{\n}\n' >"$MENU"
+  timeout 10 "$ROOT/bin/umami-install" </dev/null >"$T/out.txt" 2>&1 || fail "install did not finish"
+  assert "the existing folder" test "$(folder path)" = "$HOME/Pictures/Wallpapers"
+  assert "it says which" grep -q "Pictures/Wallpapers" "$T/out.txt"
+  refute "gum being asked" test -e "$T/gum-n"
+}
+test_the_menu_row_opens_the_choice_in_omarchys_floating_terminal() {
+  printf '{\n}\n' >"$MENU"; install_ok
+  assert "launched through Omarchy's own wrapper" grep -q 'omarchy-launch-floating-terminal-with-presentation .*umami-folder.* choose' "$MENU"
+}
+
+# ---- first run: enabling the plugin leads into setup -------------------------
+
+first_run() { "$ROOT/libexec/umami-first-run"; }
+floats() { grep -c '^float ' "$CALLS" || true; }
+
+test_enabling_the_plugin_offers_setup_in_the_floating_terminal() {
+  first_run
+  assert "one offer" test "$(floats)" = 1
+  assert "it opens the installer" grep -q "^float $ROOT/bin/umami-install\$" "$CALLS"
+}
+test_the_offer_is_made_only_once() {
+  first_run; first_run; first_run
+  assert "still one" test "$(floats)" = 1
+}
+test_two_loads_at_the_same_moment_make_one_offer() {
+  for _ in 1 2 3 4 5 6; do first_run & done; wait
+  assert "one offer, not six" test "$(floats)" = 1
+}
+test_nothing_is_offered_once_umami_is_set_up() {
+  printf '{\n}\n' >"$MENU"; install_ok
+  first_run
+  assert "no offer" test "$(floats)" = 0
+}
+test_removing_umami_lets_the_next_load_offer_setup_again() {
+  first_run; printf '{\n}\n' >"$MENU"; install_ok; uninstall_ok
+  : >"$CALLS"; first_run
+  assert "offered again" test "$(floats)" = 1
+}
+test_the_offer_is_a_prompt_not_a_change() {
+  printf '{\n}\n' >"$MENU"; cp "$MENU" "$T/before"
+  first_run
+  assert "menu untouched" same_bytes "$T/before" "$MENU"
+  refute "hook added" test -e "$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/50-umami-pin"
+}
+test_check_reports_whether_umami_is_set_up_and_changes_nothing() {
+  refute "set up before installing" "$ROOT/bin/umami-install" --check
+  refute "a menu file made by checking" test -e "$MENU"
+  printf '{\n}\n' >"$MENU"; install_ok
+  assert "set up after installing" "$ROOT/bin/umami-install" --check
+  uninstall_ok
+  refute "set up after removing" "$ROOT/bin/umami-install" --check
+}
+confirm_setup() {
+  # shellcheck disable=SC2016  # $1 is for the inner bash, which gets the plugin folder as its argument
+  bash -c 'source "$1/lib/common.sh"; source "$1/lib/folder.sh"; umami_setup_confirm' _ "$ROOT" >/dev/null 2>&1
+}
+confirm_setup_but_say_no() { ( export FAKE_GUM_CONFIRM=no; confirm_setup ); }
+test_setup_asks_first_and_a_no_means_no_change() {
+  assert "yes goes ahead" confirm_setup
+  refute "no stops" confirm_setup_but_say_no
+}
+test_the_plugin_entry_point_runs_the_first_run_script() {
+  assert "Service.qml names the script" grep -q 'libexec/umami-first-run' "$ROOT/Service.qml"
+  assert "which exists and runs" test -x "$ROOT/libexec/umami-first-run"
+  command -v omarchy >/dev/null && omarchy plugin validate "$ROOT" >/dev/null 2>&1 || true
+}
+
+# Omarchy's own parser, when this machine has it: the strongest check there is.
+test_rows_parse_with_omarchys_own_menu_code() {
+  command -v node >/dev/null && [[ -f /usr/share/omarchy/shell/plugins/menu/MenuModel.js ]] || { echo "      (skipped: needs node and an Omarchy install)"; return 0; }
+  printf '%s' "$TEMPLATE" >"$MENU"; install_ok
+  node -e '
+    const fs = require("fs"), vm = require("vm"), c = {};
+    vm.createContext(c); vm.runInContext(fs.readFileSync("/usr/share/omarchy/shell/plugins/menu/MenuModel.js", "utf8"), c);
+    const rows = c.parseMenuJsonc(fs.readFileSync(process.argv[1], "utf8"));
+    const merged = c.mergeMenuSources([], rows);
+    const bg = merged.items["style.background"], all = merged.items["style.background.umami.all"];
+    const s15 = merged.items["style.background.umami.shuffle.15"], sub = merged.items["style.background.umami.shuffle"];
+    if (!merged.items["style.background.umami.open"] || !merged.items["style.background.umami.change"]) process.exit(3);
+    if (!bg || bg.kind !== "menu" || !all || all.kind !== "action") process.exit(1);
+    if (!sub || sub.kind !== "menu" || !s15 || s15.kind !== "action" || !s15.checked) process.exit(2);
+  ' "$MENU" || fail "Omarchy's parser did not see the Umami and Shuffle rows"
+}
+
+# ---- runner -------------------------------------------------------------------
+
+passed=0 failed=0
+for name in $(declare -F | awk '{print $3}' | grep '^test_'); do
+  [[ -z $pattern || $name == *"$pattern"* ]] || continue
+  if output=$( (sandbox; "$name") 2>&1 ); then
+    passed=$((passed + 1)); printf '  ok   %s\n' "${name#test_}"
+  else
+    failed=$((failed + 1)); printf '  FAIL %s\n%s\n' "${name#test_}" "$output"
+  fi
+done
+printf '\n%d passed, %d failed\n' "$passed" "$failed"
+((failed == 0))

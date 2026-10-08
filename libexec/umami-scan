@@ -1,0 +1,68 @@
+#!/bin/bash
+# List wallpapers as "<group>\t<absolute path>", one per line.
+#
+# Groups are theme names, plus "custom" for the user's folders. In a theme, only
+# files inside a folder named backgrounds/ count, so previews, unlock art and
+# README screenshots stay out. Custom folders take every image up to a depth.
+# Names containing a tab or newline are skipped; the picker's row format cannot
+# carry them.
+#
+# Usage: umami-scan [all|theme|folder]
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+
+scope=${1:-all}
+case $scope in all | theme | folder) ;; *) umami_die "unknown scope: $scope" ;; esac
+
+only=""
+[[ $scope == "theme" ]] && only=$(umami_current_theme)
+
+groups=()
+paths=()
+
+# collect <theme|extra|custom> <root>: read NUL-separated paths on stdin.
+collect() {
+  local kind=$1 base=$2 path group
+  while IFS= read -r -d '' path; do
+    [[ $path == *$'\t'* || $path == *$'\n'* ]] && continue
+    case $kind in
+      custom) group=custom ;;
+      *) group=${path#"$base"/}; group=${group%%/*} ;;
+    esac
+    [[ -n $only && $group != "$only" ]] && continue
+    groups+=("$group")
+    paths+=("$path")
+  done
+}
+
+images() { find -L "$@" -type f "${UMAMI_IMAGES[@]}" -print0 2>/dev/null; }
+
+if [[ $scope != "folder" ]]; then
+  extras="$OMARCHY_USER/backgrounds"   # Omarchy's own hook: backgrounds/<theme>/
+  [[ -d $extras ]] && collect extra "$extras" < <(images "$extras" -mindepth 2 | sort -z)
+  for base in "${UMAMI_THEME_ROOTS[@]}"; do
+    [[ -d $base ]] || continue
+    collect theme "$base" < <(images "$base" -mindepth 3 -path "$base/*/backgrounds/*" | sort -z)
+  done
+fi
+
+if [[ $scope != "theme" ]]; then
+  while IFS= read -r dir; do
+    collect custom "$dir" < <(images "$dir" -maxdepth "$UMAMI_MAX_DEPTH" | head -z -n "$UMAMI_MAX_IMAGES" | sort -z)
+  done < <(umami_custom_folders)
+fi
+
+((${#paths[@]})) || exit 0
+
+# One realpath call resolves symlinks for all of them, then duplicates go.
+declare -A seen=()
+i=0
+while IFS= read -r -d '' real; do
+  if [[ -z ${seen[$real]:-} ]]; then
+    seen[$real]=1
+    printf '%s\t%s\n' "${groups[i]}" "$real"
+  fi
+  i=$((i + 1))
+done < <(realpath -z -- "${paths[@]}" 2>/dev/null)

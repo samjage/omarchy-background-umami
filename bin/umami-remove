@@ -1,0 +1,49 @@
+#!/bin/bash
+# Remove a wallpaper you added to the current theme (Apply and Add to <theme>).
+#
+# Only the copies in Omarchy's per-theme folder under your config are listed, so
+# the theme's own wallpapers can't be picked, and the original files you added
+# them from are never touched. If the one you remove is on screen, the theme's
+# own wallpaper comes back.
+#
+# Usage: umami-remove
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+
+theme=$(umami_current_theme)
+dir="$OMARCHY_USER/backgrounds/$theme"
+mkdir -p "$UMAMI_STATE" "$UMAMI_CACHE"
+
+exec 9>"$UMAMI_CACHE/remove.lock"
+flock -n 9 || exit 0
+
+while true; do
+  if [[ -z $theme ]] || ! find "$dir" -maxdepth 1 -type f "${UMAMI_IMAGES[@]}" 2>/dev/null | grep -q .; then
+    umami_notify "Nothing added to ${theme:-this theme} yet"
+    exit 0
+  fi
+
+  stage=$(mktemp -d "$UMAMI_CACHE/remove.XXXXXX")
+  while IFS= read -r -d '' image; do ln -s -- "$image" "$stage/${image##*/}"; done \
+    < <(find "$dir" -maxdepth 1 -type f "${UMAMI_IMAGES[@]}" -print0 | sort -z)
+  pick=$("$root/libexec/umami-pick" "$stage") || pick=$(omarchy-menu-images --filterable "$stage")
+  rm -rf -- "$stage"
+  [[ -n $pick ]] || exit 0 # Esc
+
+  file="$dir/${pick##*/}"
+  [[ -f $file ]] || exit 0
+  title="Remove From $theme?"
+  answer=$(omarchy-menu-select "$title" "Remove" "Nevermind" -- --width "$(umami_menu_width "$title" "Remove")")
+  [[ $answer == "Remove" ]] || continue
+
+  was_current=false
+  [[ $(umami_current_background) == "$(readlink -f "$file")" ]] && was_current=true
+  rm -f -- "$file"
+  rmdir "$dir" 2>/dev/null || true
+  if $was_current || [[ $(cat "$UMAMI_STATE/pinned" 2>/dev/null) == "$file" ]]; then
+    "$root/bin/umami-restore"
+  fi
+  umami_notify "Removed from $theme"
+done

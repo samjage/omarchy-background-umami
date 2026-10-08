@@ -1,0 +1,50 @@
+#!/bin/bash
+# umami-stage: keep a flat folder of symlinks named "<group>--<file>" in sync
+# with a scope and print its path. omarchy-menu-images only lists one directory
+# level, so this is how many folders become one carousel, grouped by name and
+# filterable by typing.
+#
+# Only links that changed are touched. The picker caches its rows against the
+# folder's modified time, so rebuilding it every launch would defeat the cache.
+#
+# Usage: umami-stage [all|theme|folder]
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+
+scope=${1:-all}
+stage="$UMAMI_CACHE/stage/$scope"
+mkdir -p "$stage"
+
+declare -A want=() used=()
+while IFS=$'\t' read -r group path; do
+  [[ -n $path ]] || continue
+  base=${path##*/}
+  name="$group--$base"
+  if [[ -n ${used[$name]:-} ]]; then
+    n=$(( used[$name] + 1 )); used[$name]=$n
+    name="$group--${n}-$base"
+  else
+    used[$name]=1
+  fi
+  want[$name]=$path
+done < <("$root/libexec/umami-scan" "$scope")
+
+if (( ${#want[@]} == 0 )); then
+  echo "No backgrounds found for scope: $scope" >&2
+  exit 2
+fi
+
+declare -A have=()
+while IFS=$'\t' read -r name target; do have[$name]=$target; done \
+  < <(find "$stage" -mindepth 1 -maxdepth 1 -type l -printf '%f\t%l\n' 2>/dev/null)
+
+for name in "${!have[@]}"; do
+  [[ ${want[$name]:-} == "${have[$name]}" ]] || rm -f -- "$stage/$name"
+done
+for name in "${!want[@]}"; do
+  [[ ${have[$name]:-} == "${want[$name]}" ]] || ln -sfn -- "${want[$name]}" "$stage/$name"
+done
+
+printf '%s\n' "$stage"

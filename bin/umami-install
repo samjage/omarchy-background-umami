@@ -1,0 +1,68 @@
+#!/bin/bash
+# Add Background Umami to Omarchy: Style > Background becomes a small menu with
+# Theme Backgrounds (the stock picker) and Umami, and a theme-set hook keeps a
+# wallpaper you picked through Umami when the theme changes.
+#
+# Safe to run again. Undo everything with umami-uninstall.
+#
+# Usage: umami-install [--folder DIR] [--yes] [--check]
+#   --folder DIR   where your own wallpapers live (otherwise you pick from a list)
+#   --yes          do not ask before changing the menu
+#   --check        only report: exit 0 if Umami is set up, 1 if not
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+source "$root/lib/menu.sh"
+source "$root/lib/hook.sh"
+source "$root/lib/folder.sh"
+
+folder="" assume_yes=false check=false
+while (($#)); do
+  case $1 in
+    --folder) folder=${2:-}; shift 2 ;;
+    --yes) assume_yes=true; shift ;;
+    --check) check=true; shift ;;
+    *) umami_die "unknown option: $1" ;;
+  esac
+done
+
+# Set up means our menu rows and the theme hook are both in place.
+if $check; then
+  [[ $(umami_menu_block_state "$(umami_menu_file)" 2>/dev/null) == "one" && -f $UMAMI_HOOK ]]
+  exit
+fi
+
+for tool in jq perl cmp flock; do
+  command -v "$tool" >/dev/null || umami_die "$tool is required"
+done
+
+# In a terminal, say what is about to happen and ask first.
+if [[ -t 0 && -t 1 ]] && ! $assume_yes && command -v gum >/dev/null; then
+  umami_setup_confirm || { echo "Nothing was changed. Run umami-install whenever you like." >&2; exit 130; }
+fi
+
+# Choose the wallpaper folder once; later runs keep the choice. In a terminal
+# the person picks from a short list (no typing); without one, we take the
+# folder they most likely mean and say so at the end.
+if [[ -z $folder && ! -s $UMAMI_CONFIG/folders ]]; then
+  if [[ -t 0 && -t 1 ]] && command -v gum >/dev/null; then
+    umami_folder_choose || { echo "Canceled. Nothing was changed." >&2; exit 130; }
+  else
+    folder=$(umami_default_folder)
+  fi
+fi
+[[ -z $folder ]] || umami_folder_set "$folder"
+
+trap umami_menu_cleanup EXIT
+umami_menu_install "$root"
+umami_hook_install "$root"
+
+echo "Installed. Style → Background now offers Theme Backgrounds and Umami."
+chosen=$(umami_custom_folders | head -n1)
+if umami_has_images "$chosen"; then
+  echo "Your wallpaper folder: $chosen (using the images already there; nothing is moved or changed)"
+else
+  echo "Your wallpaper folder: $chosen (empty so far; drop images in)"
+fi
+echo "To remove it: run $root/bin/umami-uninstall, then Setup → Plugins → Remove Plugin."

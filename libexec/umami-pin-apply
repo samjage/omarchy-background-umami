@@ -1,0 +1,21 @@
+#!/bin/bash
+# umami-pin-apply: theme-set hook. Puts back the wallpaper picked through Umami
+# after a theme change, so a theme switch changes colors, not your background.
+# Does nothing if nothing is pinned. Called by Omarchy as: <hook> <theme-name>.
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+
+pin_file="$UMAMI_STATE/pinned"
+[[ -s $pin_file ]] || exit 0
+pinned=$(head -n1 "$pin_file")
+
+if [[ ! -f $pinned ]]; then
+  rm -f "$pin_file"
+  umami_notify "Your saved wallpaper is missing, so Umami is using the theme's"
+  exit 0
+fi
+
+[[ $(umami_current_background) == "$(readlink -f "$pinned")" ]] && exit 0
+omarchy-theme-bg-set "$pinned"

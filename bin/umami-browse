@@ -1,0 +1,97 @@
+#!/bin/bash
+# Pick a wallpaper from a carousel, see it applied, then decide.
+#
+# The stock picker only reports a choice when you confirm, so the preview is the
+# wallpaper being applied right after you pick:
+#   Apply                   keep it; it stays through theme changes
+#   Apply and Add to <theme> keep it and copy it into that theme's own backgrounds
+#   Nevermind               put the previous wallpaper back and return to the carousel
+# Esc in the carousel leaves everything as it was.
+#
+# Usage: umami-browse [theme|folder|all]
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+
+scope=${1:-all}
+theme=$(umami_current_theme)
+original=$(umami_current_background)
+mkdir -p "$UMAMI_STATE" "$UMAMI_CACHE"
+
+# A second launch (double-click) quietly does nothing.
+exec 9>"$UMAMI_CACHE/browse.lock"
+flock -n 9 || exit 0
+
+stage=$("$root/libexec/umami-stage" "$scope") || {
+  if [[ $scope == "folder" ]]; then
+    folder=$("$root/bin/umami-folder" path)
+    title="No wallpapers in $(umami_tilde "$folder") yet"
+    answer=$(omarchy-menu-select "$title" "Open the Folder" "Nevermind" -- --width "$(umami_menu_width "$title" "Open the Folder")")
+    [[ $answer == "Open the Folder" ]] && "$root/bin/umami-folder" open
+    exit 0
+  fi
+  umami_die "no backgrounds found"
+}
+
+# The staged link for the wallpaper on screen, so the carousel opens on it.
+current_in_stage() {
+  local current
+  current=$(umami_current_background)
+  [[ -n $current ]] && find -L "$stage" -maxdepth 1 -samefile "$current" -print -quit 2>/dev/null
+}
+
+# Omarchy's picker with lighter thumbnails (see umami-pick). If it cannot be
+# reached, fall back to Omarchy's own picker. An empty answer means canceled.
+choose() {
+  local from answer
+  from=$(current_in_stage)
+  if answer=$("$root/libexec/umami-pick" "$stage" "$from"); then
+    printf '%s' "$answer"
+  else
+    omarchy-menu-images --selected "$from" --filterable "$stage"
+  fi
+}
+
+# "Apply and Add to <theme>" needs room, whatever the theme is called.
+prompt_width=$(umami_menu_width "Use This Background?" "Apply and Add to $theme")
+
+# Copy into Omarchy's own per-theme folder (never overwriting) and print the copy.
+add_to_theme() {
+  local source=$1 dir="$OMARCHY_USER/backgrounds/$theme" name target n=1
+  [[ -n $theme ]] || return 1
+  mkdir -p "$dir"
+  name=${source##*/}
+  target="$dir/$name"
+  while [[ -e $target ]]; do
+    if cmp -s "$source" "$target"; then printf '%s' "$target"; return; fi
+    n=$((n + 1))
+    target="$dir/$n-$name"
+  done
+  cp -- "$source" "$target" && printf '%s' "$target"
+}
+
+while true; do
+  pick=$(choose)
+  [[ -n $pick ]] || break # Esc: leave things as they are
+  chosen=$(readlink -f "$pick")
+
+  omarchy-theme-bg-set "$chosen" || umami_die "could not set $chosen"
+  answer=$(omarchy-menu-select "Use This Background?" "Apply" "Apply and Add to $theme" "Nevermind" -- --width "$prompt_width")
+
+  case $answer in
+    "Apply")
+      printf '%s\n' "$chosen" >"$UMAMI_STATE/pinned"
+      "$root/libexec/umami-shuffle" stop --quiet
+      break ;;
+    "Apply and Add to "*)
+      kept=$(add_to_theme "$chosen") || umami_die "could not add it to $theme"
+      omarchy-theme-bg-set "$kept"
+      printf '%s\n' "$kept" >"$UMAMI_STATE/pinned"
+      "$root/libexec/umami-shuffle" stop --quiet
+      umami_notify "Added to $theme"
+      break ;;
+    *)
+      [[ -n $original ]] && omarchy-theme-bg-set "$original" ;; # Nevermind, or Esc on the question
+  esac
+done

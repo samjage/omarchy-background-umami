@@ -1,0 +1,5 @@
+{
+  // Stand-in for Omarchy's default menu: just the row we override.
+  "style": {"icon":"S","label":"Style"},
+  "style.background": {"icon":"","label":"Background","aliases":["background","wallpaper"],"action":"stock-background-action"}
+}

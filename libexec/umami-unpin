@@ -1,0 +1,17 @@
+#!/bin/bash
+# umami-unpin: run after the stock Theme backgrounds picker. If the wallpaper is
+# no longer the pinned one, the user chose something else, so drop the pin.
+# If they canceled the picker the wallpaper is unchanged and the pin stays.
+# Choosing something else also ends any shuffle.
+
+set -uo pipefail
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/common.sh"
+
+pin_file="$UMAMI_STATE/pinned"
+[[ -s $pin_file ]] || exit 0
+pinned=$(readlink -f "$(head -n1 "$pin_file")" 2>/dev/null)
+if [[ $(umami_current_background) != "$pinned" ]]; then
+  rm -f "$pin_file"
+  "$root/libexec/umami-shuffle" stop --quiet
+fi

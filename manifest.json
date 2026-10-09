@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.samjage.background-umami",
   "name": "Background Umami",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Sam Jage",
   "description": "Pick any wallpaper from your themes or your own folders, see it applied before you commit, and keep it through theme changes. Adds Umami under Style > Background.",
   "kinds": [

@@ -475,6 +475,16 @@ test_remove_with_nothing_added_says_so() {
   assert "told" grep -q "notify Nothing added" "$CALLS"
 }
 
+test_thumbnails_and_cache_are_private() {
+  d=$XDG_CACHE_HOME/omarchy-background-umami; mkdir -p "$d/thumbs"; chmod 755 "$d" "$d/thumbs"
+  mkdir -p "$HOME/walls"; echo x >"$HOME/walls/secret.jpg"; chmod 600 "$HOME/walls/secret.jpg"
+  (umask 022; "$ROOT/libexec/umami-pick" --prepare "$HOME/walls" >/dev/null 2>&1) || true
+  assert "cache folder private" test "$(stat -c %a "$d")" = 700
+  assert "thumbs folder private" test "$(stat -c %a "$d/thumbs")" = 700
+  t=$(find "$d/thumbs" -name '*.jpg' | head -n1)
+  [[ -z $t ]] || assert "thumbnail private" test "$(stat -c %a "$t")" = 600
+}
+
 # ---- shuffle ------------------------------------------------------------------
 
 shuffle() { "$ROOT/libexec/umami-shuffle" "$@"; }

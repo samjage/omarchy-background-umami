@@ -25,6 +25,11 @@ UMAMI_MAX_IMAGES=2000
 umami_current_theme() { cat "$OMARCHY_STATE/current/theme.name" 2>/dev/null; }
 umami_current_background() { readlink -f "$OMARCHY_STATE/current/background" 2>/dev/null; }
 
+# The cache holds copies of your pictures (thumbnails), so only you may open it.
+# Tightens a cache made by an earlier version too.
+umami_private_cache() {
+  mkdir -p "$UMAMI_CACHE/thumbs" && chmod 700 "$UMAMI_CACHE" "$UMAMI_CACHE/thumbs"
+}
 umami_notify() { omarchy-notification-send "$1" -t 3000 2>/dev/null || true; }
 
 # Report a problem where the user will see it: the terminal, or a notification

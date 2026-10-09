@@ -17,7 +17,8 @@ source "$root/lib/common.sh"
 scope=${1:-all}
 theme=$(umami_current_theme)
 original=$(umami_current_background)
-mkdir -p "$UMAMI_STATE" "$UMAMI_CACHE"
+mkdir -p "$UMAMI_STATE"
+umami_private_cache
 
 # A second launch (double-click) quietly does nothing.
 exec 9>"$UMAMI_CACHE/browse.lock"

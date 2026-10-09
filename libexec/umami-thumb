@@ -5,6 +5,7 @@
 image=${1:?usage: umami-thumb <image> <thumbnail>}
 thumb=${2:?usage: umami-thumb <image> <thumbnail>}
 tmp="$thumb.$$.jpg"
+umask 077 # a thumbnail is a copy of your picture: owner only
 
 if VIPS_CONCURRENCY=1 vipsthumbnail "$image" --size 768x432 --smartcrop=centre --path "${tmp}[Q=82,strip]" 2>/dev/null; then
   mv -f -- "$tmp" "$thumb"

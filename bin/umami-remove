@@ -14,7 +14,8 @@ source "$root/lib/common.sh"
 
 theme=$(umami_current_theme)
 dir="$OMARCHY_USER/backgrounds/$theme"
-mkdir -p "$UMAMI_STATE" "$UMAMI_CACHE"
+mkdir -p "$UMAMI_STATE"
+umami_private_cache
 
 exec 9>"$UMAMI_CACHE/remove.lock"
 flock -n 9 || exit 0

@@ -14,7 +14,8 @@ source "$root/lib/common.sh"
 source "$root/lib/shuffle.sh"
 
 bag="$UMAMI_STATE/bag"
-mkdir -p "$UMAMI_STATE" "$UMAMI_CACHE"
+mkdir -p "$UMAMI_STATE"
+umami_private_cache
 
 state() { cat "$UMAMI_STATE/$1" 2>/dev/null; }
 minutes() { state shuffle.minutes; }

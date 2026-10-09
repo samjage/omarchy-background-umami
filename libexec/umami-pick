@@ -23,7 +23,7 @@ if [[ ${1:-} == "--prepare" ]]; then prepare=true; shift; fi
 dir=${1:?usage: umami-pick [--prepare] <folder> [selected]}
 selected=${2:-}
 thumbs="$UMAMI_CACHE/thumbs"
-mkdir -p "$thumbs"
+umami_private_cache
 
 # One row per image: "<image>\t<thumbnail>". A thumbnail is named after the
 # file's identity (device, inode, mtime, size), so a changed file gets a new one.

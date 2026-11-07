@@ -116,15 +116,71 @@ umami_custom_folders() {
   done <"$file"
 }
 
-# An image is "vetted" when a thumbnail of it exists, made by umami-thumb under
-# its memory, CPU and size limits. Anything we apply on our own (shuffle) must
-# pass this first, so a crafted file in a folder is skipped, never decoded
-# without limits. The thumbnail is named by the file's identity, like umami-pick.
-umami_image_vetted() { # <plugin root> <image>
-  local key thumb
-  key=$(find -L "$2" -maxdepth 0 -type f -printf '%D-%i-%T@-%s' 2>/dev/null) && [[ -n $key ]] || return 1
-  umami_private_cache
-  thumb="$UMAMI_CACHE/thumbs/$key.jpg"
-  [[ -f $thumb ]] || "$1/libexec/umami-thumb" "$2" "$thumb"
-  [[ -f $thumb ]]
+# ---- applying a wallpaper ----------------------------------------------------
+# Every wallpaper we set goes through umami_apply, and nothing else in this
+# plugin calls omarchy-theme-bg-set on a file from a folder. The shell decodes
+# whatever it is given, with no limit, so a crafted image must never reach it.
+# umami_apply copies the file into a private folder (mode 700, so nobody can
+# swap it afterwards), runs the memory/CPU-limited thumbnail worker on the COPY,
+# and only then sets the copy. A file that fails is not applied. Checking the
+# copy rather than remembering a past check means there is no cache to forge and
+# no gap between checking and using.
+UMAMI_APPLIED="$UMAMI_CACHE/applied"
+
+umami_applied_root() { readlink -f -- "$UMAMI_APPLIED" 2>/dev/null || printf '%s' "$UMAMI_APPLIED"; }
+
+# Keep the newest few copies (the previous wallpaper must survive a "Nevermind")
+# and whichever one is showing.
+umami_applied_prune() {
+  local root dir current n=0
+  root=$(umami_applied_root)
+  current=$(dirname -- "$(umami_current_background)")
+  while IFS= read -r dir; do
+    n=$((n + 1))
+    ((n > 3)) && [[ $dir != "$current" ]] && rm -rf -- "$dir"
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+  return 0
+}
+
+# umami_apply <plugin root> <image>: set it as the wallpaper if it is safe to.
+# Prints the path that was set. Returns non-zero (and sets nothing) otherwise.
+umami_apply() {
+  local root=$1 real dir copy applied size
+  mkdir -p "$UMAMI_APPLIED" && chmod 700 "$UMAMI_APPLIED" || return 1
+  applied=$(umami_applied_root)
+  real=$(readlink -f -- "$2" 2>/dev/null) || return 1
+  if [[ $real == "$applied"/* ]]; then # one of our own checked copies
+    omarchy-theme-bg-set "$real" || return 1
+    printf '%s' "$real"
+    return 0
+  fi
+  [[ -f $real ]] || return 1
+  size=$(stat -c %s -- "$real" 2>/dev/null) || return 1
+  ((size <= ${UMAMI_THUMB_MAX_BYTES:-268435456})) || return 1
+  dir=$(mktemp -d "$applied/XXXXXXXX") || return 1
+  copy="$dir/${real##*/}"
+  if ! { timeout 30 cp -- "$real" "$copy" &&
+    printf '%s\n' "$real" >"$dir/origin" &&
+    "$root/libexec/umami-thumb" "$copy" "$dir/.check.jpg" &&
+    [[ -f $dir/.check.jpg ]]; } 2>/dev/null; then
+    rm -rf -- "$dir"
+    return 1
+  fi
+  rm -f -- "$dir/.check.jpg"
+  omarchy-theme-bg-set "$copy" || { rm -rf -- "$dir"; return 1; }
+  umami_applied_prune
+  printf '%s' "$copy"
+}
+
+# The file a wallpaper was made from: for one of our copies, the original path;
+# otherwise the wallpaper itself. Use this wherever the current wallpaper is
+# compared with a picked or pinned file.
+umami_current_origin() {
+  local current origin
+  current=$(umami_current_background)
+  if [[ $current == "$(umami_applied_root)"/* ]]; then
+    origin=$(head -n1 -- "$(dirname -- "$current")/origin" 2>/dev/null)
+    [[ -n $origin ]] && current=$(readlink -f -- "$origin" 2>/dev/null || printf '%s' "$origin")
+  fi
+  printf '%s' "$current"
 }

@@ -17,5 +17,10 @@ if [[ ! -f $pinned ]]; then
   exit 0
 fi
 
-[[ $(umami_current_background) == "$(readlink -f "$pinned")" ]] && exit 0
-omarchy-theme-bg-set "$pinned"
+[[ $(umami_current_origin) == "$(readlink -f "$pinned")" ]] && exit 0
+# The file may have been replaced since it was picked: it is checked again, under
+# the same limits as everything else, before the shell ever opens it.
+if ! umami_apply "$root" "$pinned" >/dev/null; then
+  rm -f "$pin_file"
+  umami_notify "Umami could not safely use your saved wallpaper, so it is using the theme's"
+fi

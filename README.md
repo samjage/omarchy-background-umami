@@ -110,7 +110,7 @@ Setup touches exactly these, and `umami-uninstall` undoes each one:
 - A clearly marked block in `~/.config/omarchy/extensions/omarchy-menu.jsonc`. It refuses to touch that file if it doesn't parse, if something else already overrides the Background row, or if the markers are damaged. Nothing is written until the result has been checked the way Omarchy will read it.
 - A three-line hook in `~/.config/omarchy/hooks/theme-set.d/` that restores your pick after a theme change.
 - While shuffle is on, two small units in `~/.config/systemd/user/`.
-- Settings, cache and your saved pick in `~/.config/omarchy-background-umami`, `~/.cache/omarchy-background-umami` and `~/.local/state/omarchy-background-umami`.
+- Settings, cache (thumbnails and the few most recent private wallpaper copies) and your saved pick in `~/.config/omarchy-background-umami`, `~/.cache/omarchy-background-umami` and `~/.local/state/omarchy-background-umami`.
 
 Nothing else is changed, and no network access is used.
 
@@ -118,6 +118,7 @@ Nothing else is changed, and no network access is used.
 
 - Only images inside a theme's `backgrounds/` folder count as theme wallpapers, so previews and README art never show up.
 - The carousel is Omarchy's own picker, fed lighter thumbnails (768×432 instead of 1536×864), so scrolling through hundreds of wallpapers takes about a tenth of the extra memory. The first look at a new folder makes them, then they're cached.
+- Before any wallpaper is set (Apply, Shuffle, Restore, or a saved pick coming back after a theme change), Umami copies it into its private cache folder and runs the same limited check on the copy; only the copy is set. A file that fails the check is skipped, and a file that was changed or replaced since you picked it is checked again. Omarchy's own unlimited picker is never used on your folders.
 - Thumbnails are made by separate workers (at most 4) that each get a hard 512 MiB memory ceiling, a CPU limit and a 256 MB file-size cap, so a malicious or broken image in your folder is skipped instead of exhausting memory.
 - Your wallpaper folder is searched up to 4 levels deep, capped at 2000 images. It can't be `/` or your home folder.
 - If you later pick a wallpaper with the stock picker, Umami lets go of your earlier pick.

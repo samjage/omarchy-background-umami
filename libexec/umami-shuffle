@@ -30,7 +30,7 @@ folders_signature() { md5sum <"$UMAMI_CONFIG/folders" 2>/dev/null | cut -c1-8; }
 refill() { # <bag key> <scope>
   local current first
   "$root/libexec/umami-scan" "$2" | cut -f2 | shuf >"$bag"
-  current=$(umami_current_background)
+  current=$(umami_current_origin)
   first=$(head -n1 "$bag")
   if [[ -n $first && $first == "$current" ]] && (($(wc -l <"$bag") > 1)); then
     { tail -n +2 "$bag"; printf '%s\n' "$first"; } >"$bag.new" && mv -f "$bag.new" "$bag"
@@ -59,7 +59,7 @@ next_wallpaper() {
     candidate=${lines[0]}
     if ((${#lines[@]} > 1)); then printf '%s\n' "${lines[@]:1}" >"$bag.new"; else : >"$bag.new"; fi
     mv -f "$bag.new" "$bag"
-    if [[ -f $candidate ]] && umami_image_vetted "$root" "$candidate"; then printf '%s' "$candidate"; return 0; fi
+    if [[ -f $candidate ]]; then printf '%s' "$candidate"; return 0; fi
   done
 }
 
@@ -68,9 +68,15 @@ pick() {
   local path
   exec 9>"$UMAMI_CACHE/browse.lock"
   flock -n 9 || return 0
-  path=$(next_wallpaper) || umami_die "no backgrounds to shuffle in: $(scope)"
-  omarchy-theme-bg-set "$path" || umami_die "could not set $path"
-  printf '%s\n' "$path" >"$UMAMI_STATE/pinned"
+  # An image that fails the safety check (see umami_apply) is skipped.
+  for _ in $(seq 1 25); do
+    path=$(next_wallpaper) || umami_die "no backgrounds to shuffle in: $(scope)"
+    if umami_apply "$root" "$path" >/dev/null; then
+      printf '%s\n' "$path" >"$UMAMI_STATE/pinned"
+      return 0
+    fi
+  done
+  umami_die "none of the next wallpapers could be safely applied"
 }
 
 set_scope() {

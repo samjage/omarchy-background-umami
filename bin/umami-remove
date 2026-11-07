@@ -41,7 +41,7 @@ while true; do
   [[ $answer == "Remove" ]] || continue
 
   was_current=false
-  [[ $(umami_current_background) == "$(readlink -f "$file")" ]] && was_current=true
+  [[ $(umami_current_origin) == "$(readlink -f "$file")" ]] && was_current=true
   rm -f -- "$file"
   rmdir "$dir" 2>/dev/null || true
   if $was_current || [[ $(cat "$UMAMI_STATE/pinned" 2>/dev/null) == "$file" ]]; then

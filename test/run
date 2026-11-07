@@ -31,6 +31,8 @@ sandbox() {
   cat >"$T/bin/omarchy-theme-bg-set" <<STUB
 #!/bin/bash
 echo "bg-set \$1" >>"$CALLS"
+# What this wallpaper was made from, noted now because old copies get pruned later.
+if [[ -f \$(dirname "\$1")/origin ]]; then echo "bg-origin \$(head -n1 "\$(dirname "\$1")/origin")" >>"$CALLS"; else echo "bg-origin \$1" >>"$CALLS"; fi
 ln -nsf "\$(realpath "\$1")" "$XDG_STATE_HOME/omarchy/current/background"
 STUB
   cat >"$T/bin/omarchy-notification-send" <<STUB
@@ -282,7 +284,7 @@ test_pin_is_reapplied_after_a_theme_change() {
   mkdir -p "$STATE" "$HOME/walls"; touch "$HOME/walls/mine.jpg"; echo "$HOME/walls/mine.jpg" >"$(pin_file)"
   set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"
   "$ROOT/libexec/umami-pin-apply" gruvbox
-  assert "bg-set called with the pin" has_line "$CALLS" "bg-set $HOME/walls/mine.jpg"
+  assert "the pin was applied" was_applied "$HOME/walls/mine.jpg"
 }
 test_pin_not_reapplied_when_already_showing() {
   mkdir -p "$STATE" "$HOME/walls"; touch "$HOME/walls/mine.jpg"; echo "$HOME/walls/mine.jpg" >"$(pin_file)"
@@ -319,7 +321,7 @@ test_browse_nevermind_restores_the_original() {
   original=$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png; set_current "$original"
   FAKE_ANSWER=Nevermind timeout 5 "$ROOT/bin/umami-browse" theme >/dev/null 2>&1 <<<"" || true
   refute "a pin" test -e "$(pin_file)"
-  assert "original put back" has_line "$CALLS" "bg-set $original"
+  assert "original put back" was_applied "$original"
 }
 test_browse_escape_changes_nothing() {
   set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png"
@@ -445,7 +447,7 @@ test_restore_clears_the_pin_and_uses_the_themes_wallpaper() {
   touch "$XDG_STATE_HOME/omarchy/current/theme/backgrounds/1-first.jpg"
   "$ROOT/bin/umami-restore"
   assert "pin cleared" test ! -e "$(pin_file)"
-  assert "theme wallpaper set" has_line "$CALLS" "bg-set $XDG_STATE_HOME/omarchy/current/theme/backgrounds/1-first.jpg"
+  assert "theme wallpaper set" was_applied "$XDG_STATE_HOME/omarchy/current/theme/backgrounds/1-first.jpg"
 }
 
 test_remove_deletes_only_the_added_copy() {
@@ -462,7 +464,7 @@ test_remove_of_the_one_on_screen_restores_the_theme() {
   set_current "$d/mine.jpg"; echo "$d/mine.jpg" >"$(pin_file)"
   FAKE_ANSWER=Remove "$ROOT/bin/umami-remove" >/dev/null 2>&1
   refute "pin" test -e "$(pin_file)"
-  assert "theme wallpaper back" has_line "$CALLS" "bg-set $XDG_STATE_HOME/omarchy/current/theme/backgrounds/1-first.jpg"
+  assert "theme wallpaper back" was_applied "$XDG_STATE_HOME/omarchy/current/theme/backgrounds/1-first.jpg"
 }
 test_remove_nevermind_and_escape_keep_the_file() {
   d=$XDG_CONFIG_HOME/omarchy/backgrounds/gruvbox; mkdir -p "$d"; echo x >"$d/mine.jpg"
@@ -495,7 +497,10 @@ walls() { # <count>: that many wallpapers in the custom folder, shuffle scope = 
   echo "$HOME/walls" >"$CONFIG/folders"
   shuffle scope folder
 }
-applied() { grep '^bg-set ' "$CALLS" | sed 's/^bg-set //'; }
+applied_raw() { grep '^bg-set ' "$CALLS" | sed 's/^bg-set //'; }
+# The file each applied wallpaper was made from (we apply private checked copies).
+applied() { grep '^bg-origin ' "$CALLS" | sed 's/^bg-origin //'; }
+was_applied() { applied | grep -qxF -- "$1"; }
 UNITS() { echo "$XDG_CONFIG_HOME/systemd/user"; }
 
 test_shuffle_now_applies_a_wallpaper_and_holds_it() {
@@ -995,6 +1000,48 @@ test_rows_parse_with_omarchys_own_menu_code() {
     if (!bg || bg.kind !== "menu" || !all || all.kind !== "action") process.exit(1);
     if (!sub || sub.kind !== "menu" || !s15 || s15.kind !== "action" || !s15.checked) process.exit(2);
   ' "$MENU" || fail "Omarchy's parser did not see the Umami and Shuffle rows"
+}
+
+# ---- the invariant: nothing reaches the shell's decoder unchecked ---------------
+test_only_umami_apply_ever_calls_bg_set() {
+  # Every wallpaper must go through umami_apply (copy, limited check, then set).
+  # A direct call anywhere else would bypass the check, so none may exist.
+  local hits
+  hits=$(grep -rn 'omarchy-theme-bg-set' "$ROOT/bin" "$ROOT/libexec" "$ROOT/lib" | grep -v '^\S*:[0-9]*:\s*#' | grep -v 'lib/common.sh') || true
+  [[ -z $hits ]] || fail "direct omarchy-theme-bg-set calls: $hits"
+  [[ $(grep -c 'omarchy-theme-bg-set "\$' "$ROOT/lib/common.sh") == 2 ]] || fail "umami_apply should be the only caller"
+  hits=$(grep -rn 'omarchy-menu-images' "$ROOT/bin" "$ROOT/libexec" "$ROOT/lib" | grep -v '^\S*:[0-9]*:\s*#') || true
+  [[ -z $hits ]] || fail "Omarchy's unlimited picker is used: $hits"
+}
+test_a_pinned_file_replaced_by_a_crafted_one_is_not_applied() {
+  mkdir -p "$STATE" "$HOME/walls"; printf good >"$HOME/walls/mine.jpg"; echo "$HOME/walls/mine.jpg" >"$(pin_file)"
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"
+  # Same name, same size and the same timestamp, new contents: what a cache keyed on identity would trust.
+  touch -r "$HOME/walls/mine.jpg" "$T/stamp"; printf evil >"$HOME/walls/mine.jpg"; touch -r "$T/stamp" "$HOME/walls/mine.jpg"
+  FAKE_VIPS_FAIL=mine "$ROOT/libexec/umami-pin-apply" gruvbox
+  refute "the replaced file was applied" was_applied "$HOME/walls/mine.jpg"
+  assert "the pin was dropped" test ! -e "$(pin_file)"
+  assert "the user was told" grep -q '^notify Umami could not safely use' "$CALLS"
+}
+test_what_is_applied_is_a_private_copy_the_folder_cannot_change() {
+  mkdir -p "$STATE" "$HOME/walls"; printf one >"$HOME/walls/a.jpg"
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"
+  echo "$HOME/walls/a.jpg" >"$(pin_file)"; "$ROOT/libexec/umami-pin-apply" gruvbox
+  copy=$(applied_raw | tail -n1)
+  assert "set from the private cache" grep -q "^$XDG_CACHE_HOME/omarchy-background-umami/applied/" <<<"$copy"
+  printf two >"$HOME/walls/a.jpg"
+  assert "the copy is unchanged" test "$(cat "$copy")" = one
+  assert "the folder is private" test "$(stat -c %a "$XDG_CACHE_HOME/omarchy-background-umami/applied")" = 700
+}
+test_old_private_copies_are_pruned_but_the_one_showing_is_kept() {
+  mkdir -p "$HOME/walls"
+  source "$ROOT/lib/common.sh"
+  for i in 1 2 3 4 5 6; do
+    printf '%s' "$i" >"$HOME/walls/w$i.jpg"
+    umami_apply "$ROOT" "$HOME/walls/w$i.jpg" >/dev/null; sleep 0.02
+  done
+  assert "at most 3 kept" test "$(find "$XDG_CACHE_HOME/omarchy-background-umami/applied" -mindepth 1 -maxdepth 1 -type d | wc -l)" -le 3
+  assert "the one showing is kept" test -f "$(readlink -f "$XDG_STATE_HOME/omarchy/current/background")"
 }
 
 # Omarchy 4.5 renamed style.background to appearance.background.

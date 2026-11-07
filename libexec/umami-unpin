@@ -11,7 +11,7 @@ source "$root/lib/common.sh"
 pin_file="$UMAMI_STATE/pinned"
 [[ -s $pin_file ]] || exit 0
 pinned=$(readlink -f "$(head -n1 "$pin_file")" 2>/dev/null)
-if [[ $(umami_current_background) != "$pinned" ]]; then
+if [[ $(umami_current_origin) != "$pinned" ]]; then
   rm -f "$pin_file"
   "$root/libexec/umami-shuffle" stop --quiet
 fi

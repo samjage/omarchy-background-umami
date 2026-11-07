@@ -16,7 +16,7 @@ source "$root/lib/common.sh"
 
 scope=${1:-all}
 theme=$(umami_current_theme)
-original=$(umami_current_background)
+original=$(umami_current_background) # already a safe file, or a stock one
 mkdir -p "$UMAMI_STATE"
 umami_private_cache
 
@@ -38,7 +38,7 @@ stage=$("$root/libexec/umami-stage" "$scope") || {
 # The staged link for the wallpaper on screen, so the carousel opens on it.
 current_in_stage() {
   local current
-  current=$(umami_current_background)
+  current=$(umami_current_origin)
   [[ -n $current ]] && find -L "$stage" -maxdepth 1 -samefile "$current" -print -quit 2>/dev/null
 }
 
@@ -61,7 +61,7 @@ add_to_theme() {
   local source=$1 dir="$OMARCHY_USER/backgrounds/$theme" name target n=1
   [[ -n $theme ]] || return 1
   mkdir -p "$dir"
-  name=${source##*/}
+  name=$2
   target="$dir/$name"
   while [[ -e $target ]]; do
     if cmp -s "$source" "$target"; then printf '%s' "$target"; return; fi
@@ -76,7 +76,7 @@ while true; do
   [[ -n $pick ]] || break # Esc: leave things as they are
   chosen=$(readlink -f "$pick")
 
-  omarchy-theme-bg-set "$chosen" || umami_die "could not set $chosen"
+  applied=$(umami_apply "$root" "$chosen") || umami_die "could not safely apply ${chosen##*/}"
   answer=$(omarchy-menu-select "Use This Background?" "Apply" "Apply and Add to $theme" "Nevermind" -- --width "$prompt_width")
 
   case $answer in
@@ -85,13 +85,14 @@ while true; do
       "$root/libexec/umami-shuffle" stop --quiet
       break ;;
     "Apply and Add to "*)
-      kept=$(add_to_theme "$chosen") || umami_die "could not add it to $theme"
-      omarchy-theme-bg-set "$kept"
+      # Copy the checked copy, not the original, so nothing unchecked lands in the theme.
+      kept=$(add_to_theme "$applied" "${chosen##*/}") || umami_die "could not add it to $theme"
+      umami_apply "$root" "$kept" >/dev/null || umami_die "could not safely apply ${kept##*/}"
       printf '%s\n' "$kept" >"$UMAMI_STATE/pinned"
       "$root/libexec/umami-shuffle" stop --quiet
       umami_notify "Added to $theme"
       break ;;
     *)
-      [[ -n $original ]] && omarchy-theme-bg-set "$original" ;; # Nevermind, or Esc on the question
+      [[ -n $original ]] && umami_apply "$root" "$original" >/dev/null ;; # Nevermind, or Esc on the question
   esac
 done

@@ -22,6 +22,22 @@ offer_setup() {
   fi
 }
 
+# Set up for an older Omarchy (rows under Style, which 4.5 renamed Appearance):
+# move them where this Omarchy keeps its Background row. The person already
+# agreed to Umami, so this is not offered again.
+block_is_stale() {
+  local file
+  file=$(umami_menu_file 2>/dev/null) || return 1
+  [[ $(umami_menu_block_state "$file") == "one" && -f $UMAMI_HOOK ]] &&
+    [[ $(umami_block_bg_id "$file") != "$(umami_bg_id)" ]]
+}
+
 if ! "$root/bin/umami-install" --check; then
-  offer_setup
+  if block_is_stale; then
+    if "$root/bin/umami-install" --yes </dev/null >/dev/null 2>&1; then
+      umami_notify "Umami: updated its menu for this version of Omarchy"
+    fi
+  else
+    offer_setup
+  fi
 fi

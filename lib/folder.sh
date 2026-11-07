@@ -4,7 +4,7 @@
 # Say plainly what setup does, and ask. Returns non-zero if the answer is no.
 umami_setup_confirm() {
   gum style --bold "Background Umami"
-  gum style "Adds Umami to Style → Background, and keeps a wallpaper you pick when you change themes."
+  gum style "Adds Umami to $(umami_bg_label) → Background, and keeps a wallpaper you pick when you change themes."
   gum style "Nothing else is changed, and umami-uninstall puts everything back exactly as it was."
   echo
   gum confirm "Set up Background Umami now?" --affirmative "Set up" --negative "Not now"

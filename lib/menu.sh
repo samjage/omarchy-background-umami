@@ -60,10 +60,31 @@ umami_menu_block_state() {
 umami_menu_scratch() { printf '%s.umami-new' "$1"; }
 umami_menu_cleanup() { rm -f -- "$(umami_menu_scratch "$(umami_menu_file)")"; }
 
+# Omarchy 4.5 renamed the Background row from style.background to
+# appearance.background (the Style menu became Appearance). The row we override
+# is whichever one this Omarchy ships, with an action; prints its id.
+umami_bg_id() {
+  local id
+  for id in appearance.background style.background; do
+    if umami_menu_strip 2>/dev/null <"$UMAMI_DEFAULT_MENU" | jq -e --arg id "$id" '.[$id] | select((.action // "") != "")' >/dev/null 2>&1; then
+      printf '%s' "$id"; return 0
+    fi
+  done
+  return 1
+}
+
 # Omarchy's own Background row, as JSON. Fails if it is missing or has no action.
 umami_stock_background() {
   umami_menu_strip 2>/dev/null <"$UMAMI_DEFAULT_MENU" |
-    jq -ec '.["style.background"] | select((.action // "") != "")'
+    jq -ec --arg id "$1" '.[$id] | select((.action // "") != "")'
+}
+
+# The menu Background lives in, for messages.
+umami_bg_label() { [[ $(umami_bg_id) == appearance.* ]] && echo Appearance || echo Style; }
+
+# The Background id our installed block was written for ("" if none).
+umami_block_bg_id() {
+  sed -n 's/^  "\([a-z.]*\)\.umami": .*/\1/p' "$1" 2>/dev/null | head -n1
 }
 
 # Our rows. Background becomes a submenu: Theme Backgrounds runs the stock
@@ -71,7 +92,7 @@ umami_stock_background() {
 # ours. A user entry replaces every field of the stock row it names, so icon,
 # label and aliases are carried over. Glyphs are written as \uXXXX so an editor
 # cannot strip them. The Umami row hides itself if our scripts have gone.
-umami_menu_block() { # <plugin root> <stock row json>
+umami_menu_block() { # <plugin root> <stock row json> <background id>
   jq -n -r --argjson stock "$2" --arg root "$1" '
     def run($cmd; $arg): ($root + "/" + $cmd | @sh) + (if $arg == "" then "" else " " + $arg end);
     def shuffle($arg): run("libexec/umami-shuffle"; $arg);
@@ -102,12 +123,12 @@ umami_menu_block() { # <plugin root> <stock row json>
       row("style.background.umami.restore"; "Restore Default"; run("bin/umami-restore"; ""))
     ] | from_entries
     | to_entries[] | "  \(.key | @json): \(.value | tojson),"' |
-    perl -CSD -pe 's/([^\x00-\x7f])/sprintf("\\u%04x", ord $1)/ge' |
+    BG_ID=$3 perl -CSD -pe 's/^  "style\.background/  "$ENV{BG_ID}/; s/([^\x00-\x7f])/sprintf("\\u%04x", ord $1)/ge' |
     { printf '  %s\n' "$UMAMI_MENU_BEGIN"; cat; printf '  %s\n' "$UMAMI_MENU_END"; }
 }
 
 umami_menu_install() { # <plugin root>
-  local file stock block new want got existing
+  local file stock block new want got existing bgid
   file=$(umami_menu_file)
   mkdir -p "$(dirname "$file")"
   [[ -f $file ]] || printf '{\n}\n' >"$file"
@@ -115,13 +136,14 @@ umami_menu_install() { # <plugin root>
   umami_menu_parses <"$file" || umami_die "$file is not a valid Omarchy menu file. Fix or move it first; a broken file hides every user menu row."
   umami_menu_uses_items <"$file" && umami_die "$file uses the {\"items\": …} layout, which Umami does not edit."
   [[ $(umami_menu_block_state "$file") != "broken" ]] || umami_die "$file has a damaged Umami block (a missing or doubled marker). Delete the lines between the markers and run again."
-  stock=$(umami_stock_background) || umami_die "no stock style.background row in $UMAMI_DEFAULT_MENU; this Omarchy lays out its menu differently."
+  bgid=$(umami_bg_id) || umami_die "no stock Background row (appearance.background or style.background) in $UMAMI_DEFAULT_MENU; this Omarchy lays out its menu differently."
+  stock=$(umami_stock_background "$bgid") || umami_die "the stock $bgid row has no action; this Omarchy lays out its menu differently."
   existing=$(umami_menu_drop <"$file" | umami_menu_keys)
-  if grep -qx 'style.background' <<<"$existing"; then
-    umami_die "$file already defines style.background (another plugin, or your own edit). Overriding it twice would break one of them."
+  if grep -qx -e 'style.background' -e 'appearance.background' <<<"$existing"; then
+    umami_die "$file already defines the Background row (another plugin, or your own edit). Overriding it twice would break one of them."
   fi
 
-  block=$(umami_menu_block "$1" "$stock") && [[ $block == *'"style.background.umami.all"'* ]] ||
+  block=$(umami_menu_block "$1" "$stock" "$bgid") && [[ $block == *"\"$bgid.umami.all\""* ]] ||
     umami_die "could not build the menu rows (is jq working?); nothing was changed."
   new=$(umami_menu_scratch "$file")
   umami_menu_drop <"$file" | umami_menu_add "$block" >"$new" || umami_die "could not place the block in $file"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Add Background Umami to Omarchy: Style > Background becomes a small menu with
+# Add Background Umami to Omarchy: Background (Appearance in Omarchy 4.5, Style before) becomes a small menu with
 # Theme Backgrounds (the stock picker) and Umami, and a theme-set hook keeps a
 # wallpaper you picked through Umami when the theme changes.
 #
@@ -27,9 +27,13 @@ while (($#)); do
   esac
 done
 
-# Set up means our menu rows and the theme hook are both in place.
+# Set up means our menu rows and the theme hook are both in place, and the rows
+# sit where this Omarchy keeps its Background row (4.5 moved it from Style to
+# Appearance, which strands rows written for 4.0).
 if $check; then
-  [[ $(umami_menu_block_state "$(umami_menu_file)" 2>/dev/null) == "one" && -f $UMAMI_HOOK ]]
+  file=$(umami_menu_file 2>/dev/null)
+  [[ $(umami_menu_block_state "$file" 2>/dev/null) == "one" && -f $UMAMI_HOOK ]] || exit 1
+  [[ $(umami_block_bg_id "$file") == "$(umami_bg_id)" ]]
   exit
 fi
 
@@ -54,11 +58,20 @@ if [[ -z $folder && ! -s $UMAMI_CONFIG/folders ]]; then
 fi
 [[ -z $folder ]] || umami_folder_set "$folder"
 
-trap umami_menu_cleanup EXIT
+# Setup runs in a floating terminal that closes with the script, so a failure
+# would flash past. Hold the window open until the message has been read.
+finish() {
+  local status=$?
+  umami_menu_cleanup
+  if ((status != 0 && status != 130)) && [[ -t 0 && -t 1 ]]; then
+    read -rp "Press Enter to close. "
+  fi
+}
+trap finish EXIT
 umami_menu_install "$root"
 umami_hook_install "$root"
 
-echo "Installed. Style → Background now offers Theme Backgrounds and Umami."
+echo "Installed. $(umami_bg_label) → Background now offers Theme Backgrounds and Umami."
 chosen=$(umami_custom_folders | head -n1)
 if umami_has_images "$chosen"; then
   echo "Your wallpaper folder: $chosen (using the images already there; nothing is moved or changed)"

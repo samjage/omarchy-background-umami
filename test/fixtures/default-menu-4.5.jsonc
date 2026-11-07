@@ -1,0 +1,6 @@
+{
+  // Stand-in for Omarchy 4.5's default menu: Style became Appearance.
+  "appearance": {"icon":"P","label":"Appearance","aliases":["style"]},
+  "appearance.theme": {"icon":"T","label":"Theme","action":"stock-theme-action"},
+  "appearance.background": {"icon":"","label":"Background","aliases":["background","wallpaper"],"action":"stock-background-action"}
+}

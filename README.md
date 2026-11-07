@@ -19,10 +19,10 @@ I wanted a little more quick customization. Changing a wallpaper shouldn't mean 
 
 ## The menu
 
-Omarchy's **Style → Background** keeps working exactly as it does. It just gains a second choice next to the stock picker:
+Omarchy's **Appearance → Background** keeps working exactly as it does. It just gains a second choice next to the stock picker:
 
 ```
-Style → Background
+Appearance → Background
   ├─ Theme Backgrounds      the stock picker, untouched
   └─ Umami
        ├─ Custom Folder     your own wallpapers
@@ -53,7 +53,7 @@ Pick an image and it's applied straight away. Then choose:
 2. Paste `https://github.com/samjage/omarchy-background-umami` and say yes.
 3. A setup window opens by itself. It says what will change and asks before doing anything. Choose **Set up**, then pick where your wallpapers live from a short list.
 
-That's it. Style → Background now has Umami in it.
+That's it. Appearance → Background now has Umami in it.
 
 If the setup window doesn't open, run it yourself:
 
@@ -87,7 +87,7 @@ Then **Setup → Plugins → Remove Plugin → Background Umami**.
 
 Your menu file comes back **byte for byte**, and the theme hook, any shuffle timer, and Umami's settings, cache and saved pick are removed (leave off `--purge` to keep the settings). Your wallpapers are never touched, including the ones you added to a theme: they're your files, and Omarchy's own picker uses them.
 
-If you removed the plugin first, nothing is broken, but Style → Background keeps a one-item submenu. Add the plugin again, run the removal command above, then remove the plugin once more.
+If you removed the plugin first, nothing is broken, but Appearance → Background keeps a one-item submenu. Add the plugin again, run the removal command above, then remove the plugin once more.
 
 ## Where do my wallpapers go?
 
@@ -107,7 +107,7 @@ The schedule is a systemd user timer that Umami creates when you turn shuffle on
 
 Setup touches exactly these, and `umami-uninstall` undoes each one:
 
-- A clearly marked block in `~/.config/omarchy/extensions/omarchy-menu.jsonc`. It refuses to touch that file if it doesn't parse, if something else already overrides `style.background`, or if the markers are damaged. Nothing is written until the result has been checked the way Omarchy will read it.
+- A clearly marked block in `~/.config/omarchy/extensions/omarchy-menu.jsonc`. It refuses to touch that file if it doesn't parse, if something else already overrides the Background row, or if the markers are damaged. Nothing is written until the result has been checked the way Omarchy will read it.
 - A three-line hook in `~/.config/omarchy/hooks/theme-set.d/` that restores your pick after a theme change.
 - While shuffle is on, two small units in `~/.config/systemd/user/`.
 - Settings, cache and your saved pick in `~/.config/omarchy-background-umami`, `~/.cache/omarchy-background-umami` and `~/.local/state/omarchy-background-umami`.
@@ -124,7 +124,7 @@ Nothing else is changed, and no network access is used.
 
 ## Requirements
 
-Omarchy 4 (Quattro). It uses `jq`, `perl`, `cmp`, `flock`, `gum` and `vipsthumbnail`, which Omarchy already includes, and a systemd user session for shuffle. Setup checks for `jq`, `perl`, `cmp` and `flock` before it changes anything. Tested on Omarchy 4.0.4.
+Omarchy 4 (Quattro), including 4.5, where the Background row moved from Style to Appearance (older versions are handled too). It uses `jq`, `perl`, `cmp`, `flock`, `gum` and `vipsthumbnail`, which Omarchy already includes, and a systemd user session for shuffle. Setup checks for `jq`, `perl`, `cmp` and `flock` before it changes anything. Tested on Omarchy 4.0.4 and 4.5.0.
 
 ## Development
 

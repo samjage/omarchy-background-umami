@@ -966,12 +966,44 @@ test_rows_parse_with_omarchys_own_menu_code() {
     vm.createContext(c); vm.runInContext(fs.readFileSync("/usr/share/omarchy/shell/plugins/menu/MenuModel.js", "utf8"), c);
     const rows = c.parseMenuJsonc(fs.readFileSync(process.argv[1], "utf8"));
     const merged = c.mergeMenuSources([], rows);
-    const bg = merged.items["style.background"], all = merged.items["style.background.umami.all"];
-    const s15 = merged.items["style.background.umami.shuffle.15"], sub = merged.items["style.background.umami.shuffle"];
-    if (!merged.items["style.background.umami.open"] || !merged.items["style.background.umami.change"]) process.exit(3);
+    const id = fs.readFileSync(process.argv[1], "utf8").includes("\"appearance.background\"") ? "appearance.background" : "style.background";
+    const bg = merged.items[id], all = merged.items[id + ".umami.all"];
+    const s15 = merged.items[id + ".umami.shuffle.15"], sub = merged.items[id + ".umami.shuffle"];
+    if (!merged.items[id + ".umami.open"] || !merged.items[id + ".umami.change"]) process.exit(3);
     if (!bg || bg.kind !== "menu" || !all || all.kind !== "action") process.exit(1);
     if (!sub || sub.kind !== "menu" || !s15 || s15.kind !== "action" || !s15.checked) process.exit(2);
   ' "$MENU" || fail "Omarchy's parser did not see the Umami and Shuffle rows"
+}
+
+# Omarchy 4.5 renamed style.background to appearance.background.
+use_omarchy_45() { cp "$FIXTURES/default-menu-4.5.jsonc" "$OMARCHY_PATH/default/omarchy/omarchy-menu.jsonc"; }
+test_omarchy_45_rows_go_under_appearance() {
+  use_omarchy_45
+  printf '%s' "$TEMPLATE" >"$MENU"; install_ok
+  assert "Umami rows live under appearance.background" bash -c "$(declare -f menu_keys); ROOT=$ROOT MENU=$MENU; menu_keys | grep -qx appearance.background.umami.all"
+  assert "stock row keeps its place" bash -c "$(declare -f menu_keys); ROOT=$ROOT MENU=$MENU; menu_keys | grep -qx appearance.background.stock"
+  refute "no leftover style rows" grep -q '"style\.background' "$MENU"
+  assert "stock action is carried over" grep -q 'stock-background-action' "$MENU"
+  assert "set up" "$ROOT/bin/umami-install" --check
+  uninstall_ok
+  same_bytes "$MENU" <(printf '%s' "$TEMPLATE") || fail "uninstall did not restore the file"
+}
+test_omarchy_45_refuses_an_existing_background_override() {
+  use_omarchy_45
+  printf '{\n  "appearance.background": {"label":"Mine","action":"x"}\n}\n' >"$MENU"
+  refute "install over an override" "$ROOT/bin/umami-install" --folder "$HOME/walls"
+  refute "no block written" grep -q 'umami managed block' "$MENU"
+}
+test_rows_written_for_omarchy_4_are_moved_by_first_run() {
+  printf '%s' "$TEMPLATE" >"$MENU"; install_ok
+  assert "4.0 rows under style" grep -q '"style.background.umami.all"' "$MENU"
+  use_omarchy_45   # the machine upgrades
+  refute "stale rows are not 'set up'" "$ROOT/bin/umami-install" --check
+  "$ROOT/libexec/umami-first-run" >/dev/null 2>&1
+  assert "rows moved to appearance" grep -q '"appearance.background.umami.all"' "$MENU"
+  refute "no style rows left" grep -q '"style\.background' "$MENU"
+  assert "set up again" "$ROOT/bin/umami-install" --check
+  refute "no setup window was opened for an upgrade" grep -q '^float' "$CALLS"
 }
 
 # ---- runner -------------------------------------------------------------------

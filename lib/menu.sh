@@ -87,6 +87,23 @@ umami_block_bg_id() {
   sed -n 's/^  "\([a-z.]*\)\.umami": .*/\1/p' "$1" 2>/dev/null | head -n1
 }
 
+# The block as it stands in the file, markers included, without carriage returns.
+umami_menu_block_installed() { # <menu file>
+  awk -v b="$UMAMI_MENU_BEGIN" -v e="$UMAMI_MENU_END" 'index($0, b) { p = 1 } p { print } index($0, e) { p = 0 }' "$1" | tr -d '\r'
+}
+
+# Does the installed block equal what this version of the plugin would write
+# today? False after a plugin update that changed the rows, the plugin folder
+# moving, or Omarchy changing its stock Background row.
+umami_menu_block_current() { # <menu file> <plugin root>
+  local bgid stock want have
+  bgid=$(umami_bg_id) || return 1
+  stock=$(umami_stock_background "$bgid") || return 1
+  want=$(umami_menu_block "$2" "$stock" "$bgid") || return 1
+  have=$(umami_menu_block_installed "$1")
+  [[ $want == "$have" ]]
+}
+
 # Our rows. Background becomes a submenu: Theme Backgrounds runs the stock
 # action (then drops the pin if a different wallpaper was chosen), Umami holds
 # ours. A user entry replaces every field of the stock row it names, so icon,

@@ -27,13 +27,15 @@ while (($#)); do
   esac
 done
 
-# Set up means our menu rows and the theme hook are both in place, and the rows
-# sit where this Omarchy keeps its Background row (4.5 moved it from Style to
-# Appearance, which strands rows written for 4.0).
+# Set up means our menu rows and the theme hook are both in place and match what
+# this version of the plugin writes: rows where this Omarchy keeps its Background
+# row (4.5 moved it from Style to Appearance), and rows from an older plugin
+# version count as not set up, so an update refreshes them.
 if $check; then
   file=$(umami_menu_file 2>/dev/null)
   [[ $(umami_menu_block_state "$file" 2>/dev/null) == "one" && -f $UMAMI_HOOK ]] || exit 1
-  [[ $(umami_block_bg_id "$file") == "$(umami_bg_id)" ]]
+  [[ $(umami_block_bg_id "$file") == "$(umami_bg_id)" ]] || exit 1
+  umami_menu_block_current "$file" "$root" && umami_hook_current "$root"
   exit
 fi
 

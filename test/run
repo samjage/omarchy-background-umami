@@ -1006,6 +1006,19 @@ test_rows_written_for_omarchy_4_are_moved_by_first_run() {
   refute "no setup window was opened for an upgrade" grep -q '^float' "$CALLS"
 }
 
+test_an_older_plugin_version_is_refreshed_by_first_run() {
+  printf '%s' "$TEMPLATE" >"$MENU"; install_ok
+  assert "current after install" "$ROOT/bin/umami-install" --check
+  # an older version wrote different rows and a different hook
+  sed -i 's/"label":"Custom Folder"/"label":"Old Folder"/; s/Custom Folder/Old Folder/' "$MENU"
+  printf '#!/bin/bash\n# umami-background-hook\nexit 0\n' >"$XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/50-umami-pin"
+  refute "old rows are not 'set up'" "$ROOT/bin/umami-install" --check
+  : >"$CALLS"; "$ROOT/libexec/umami-first-run" >/dev/null 2>&1
+  assert "set up again" "$ROOT/bin/umami-install" --check
+  refute "old rows gone" grep -q 'Old Folder' "$MENU"
+  refute "no setup window for an update" grep -q '^float' "$CALLS"
+}
+
 # ---- runner -------------------------------------------------------------------
 
 passed=0 failed=0

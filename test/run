@@ -811,11 +811,32 @@ test_browse_uses_the_light_picker_not_omarchys() {
   assert "ours was used" test -e "$T/rows.txt"
   refute "Omarchy's own picker" grep -q stock-picker "$CALLS"
 }
-test_browse_falls_back_to_omarchys_picker() {
+test_browse_never_falls_back_to_omarchys_unlimited_picker() {
   set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png"
   FAKE_SHELL_FAIL=1 FAKE_ANSWER=Apply browse
-  assert "fell back" grep -q stock-picker "$CALLS"
-  assert "still pinned a wallpaper" test -s "$(pin_file)"
+  refute "Omarchy's own picker (no limits on originals)" grep -q stock-picker "$CALLS"
+  assert "told the user" grep -q '^notify Umami: could not show' "$CALLS"
+}
+test_a_folder_of_only_rejected_images_never_reaches_omarchys_picker() {
+  mkdir -p "$T/walls"; printf x >"$T/walls/evil.png"; printf '%s\n' "$T/walls" >/dev/null
+  mkdir -p "$CONFIG"; printf '%s\n' "$T/walls" >"$CONFIG/folders"
+  FAKE_VIPS_FAIL=evil FAKE_ANSWER=Apply "$ROOT/bin/umami-browse" folder >/dev/null 2>&1
+  refute "Omarchy's own picker" grep -q stock-picker "$CALLS"
+  refute "anything applied" grep -q '^bg-set' "$CALLS"
+}
+test_remove_never_falls_back_to_omarchys_picker() {
+  mkdir -p "$XDG_CONFIG_HOME/omarchy/backgrounds/gruvbox"; printf x >"$XDG_CONFIG_HOME/omarchy/backgrounds/gruvbox/evil.png"
+  FAKE_VIPS_FAIL=evil FAKE_ANSWER=Remove "$ROOT/bin/umami-remove" >/dev/null 2>&1
+  refute "Omarchy's own picker" grep -q stock-picker "$CALLS"
+  assert "the file is still there" test -f "$XDG_CONFIG_HOME/omarchy/backgrounds/gruvbox/evil.png"
+}
+test_shuffle_skips_an_image_the_limits_reject() {
+  mkdir -p "$T/walls"; printf a >"$T/walls/evil.png"; printf bb >"$T/walls/good.png"
+  mkdir -p "$CONFIG"; printf '%s\n' "$T/walls" >"$CONFIG/folders"
+  printf 'folder\n' >"$STATE/shuffle.scope" 2>/dev/null || { mkdir -p "$STATE"; printf 'folder\n' >"$STATE/shuffle.scope"; }
+  for i in 1 2 3 4 5 6; do FAKE_VIPS_FAIL=evil "$ROOT/libexec/umami-shuffle" now >/dev/null 2>&1; done
+  refute "the rejected image was applied" grep -q '^bg-set .*evil.png' "$CALLS"
+  assert "the good one was" grep -q '^bg-set .*good.png' "$CALLS"
 }
 test_browse_does_not_fall_back_when_you_cancel() {
   set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/b.png"
@@ -1023,7 +1044,7 @@ test_an_older_plugin_version_is_refreshed_by_first_run() {
 test_thumbnail_workers_run_under_hard_memory_and_cpu_limits() {
   mkdir -p "$T/in"; : >"$T/in/a.png"
   "$ROOT/libexec/umami-thumb" "$T/in/a.png" "$T/a.jpg"
-  assert "vips ran with a 1 GiB ceiling and a CPU limit" grep -qx 'limits mem=1048576 cpu=30' "$CALLS"
+  assert "vips ran with a 512 MiB ceiling and a CPU limit" grep -qx 'limits mem=524288 cpu=30' "$CALLS"
   assert "thumbnail made" test -f "$T/a.jpg"
 }
 test_a_huge_file_is_skipped_not_decoded() {
@@ -1046,7 +1067,7 @@ png += chunk(b"IDAT", zlib.compress(b"".join(b"\0" + b"\x80" * 192 for _ in rang
 open(sys.argv[1], "wb").write(png)
 PY
   # The real vipsthumbnail, not the stand-in: the ceiling must stop it near 1 GiB.
-  PATH=${PATH#"$T/bin:"} UMAMI_THUMB_MEM_KB=1048576 "$ROOT/libexec/umami-thumb" "$T/bomb.png" "$T/bomb.jpg"
+  PATH=${PATH#"$T/bin:"} UMAMI_THUMB_MEM_KB=524288 "$ROOT/libexec/umami-thumb" "$T/bomb.png" "$T/bomb.jpg"
   refute "no thumbnail from the bomb" test -f "$T/bomb.jpg"
 }
 

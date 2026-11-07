@@ -115,3 +115,16 @@ umami_custom_folders() {
     [[ -n $line && $line != \#* ]] && umami_safe_folder "$line" && printf '%s\n' "$line"
   done <"$file"
 }
+
+# An image is "vetted" when a thumbnail of it exists, made by umami-thumb under
+# its memory, CPU and size limits. Anything we apply on our own (shuffle) must
+# pass this first, so a crafted file in a folder is skipped, never decoded
+# without limits. The thumbnail is named by the file's identity, like umami-pick.
+umami_image_vetted() { # <plugin root> <image>
+  local key thumb
+  key=$(find -L "$2" -maxdepth 0 -type f -printf '%D-%i-%T@-%s' 2>/dev/null) && [[ -n $key ]] || return 1
+  umami_private_cache
+  thumb="$UMAMI_CACHE/thumbs/$key.jpg"
+  [[ -f $thumb ]] || "$1/libexec/umami-thumb" "$2" "$thumb"
+  [[ -f $thumb ]]
+}

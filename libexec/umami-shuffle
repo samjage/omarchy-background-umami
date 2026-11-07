@@ -59,7 +59,7 @@ next_wallpaper() {
     candidate=${lines[0]}
     if ((${#lines[@]} > 1)); then printf '%s\n' "${lines[@]:1}" >"$bag.new"; else : >"$bag.new"; fi
     mv -f "$bag.new" "$bag"
-    if [[ -f $candidate ]]; then printf '%s' "$candidate"; return 0; fi
+    if [[ -f $candidate ]] && umami_image_vetted "$root" "$candidate"; then printf '%s' "$candidate"; return 0; fi
   done
 }
 

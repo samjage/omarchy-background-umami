@@ -29,7 +29,8 @@ while true; do
   stage=$(mktemp -d "$UMAMI_CACHE/remove.XXXXXX")
   while IFS= read -r -d '' image; do ln -s -- "$image" "$stage/${image##*/}"; done \
     < <(find "$dir" -maxdepth 1 -type f "${UMAMI_IMAGES[@]}" -print0 | sort -z)
-  pick=$("$root/libexec/umami-pick" "$stage") || pick=$(omarchy-menu-images --filterable "$stage")
+  # No fallback to Omarchy's own picker: it decodes originals without our limits.
+  pick=$("$root/libexec/umami-pick" "$stage") || { rm -rf -- "$stage"; umami_die "could not show the wallpapers (the picker is not running, or no image could be safely previewed)"; }
   rm -rf -- "$stage"
   [[ -n $pick ]] || exit 0 # Esc
 

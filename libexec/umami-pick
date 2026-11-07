@@ -38,7 +38,7 @@ done < <(find -L "$dir" -mindepth 1 -maxdepth 1 -type f -printf '%D-%i-%T@-%s\t%
 if ((${#make[@]})); then
   # The first look at a big folder takes a moment; say so instead of seeming stuck.
   ((${#make[@]} > 160)) && ! $prepare && umami_notify "Preparing thumbnails (only the first time)"
-  printf '%s\0' "${make[@]}" | xargs -0 -n2 -P"$(nproc)" "$root/libexec/umami-thumb"
+  printf '%s\0' "${make[@]}" | xargs -0 -n2 -P"$(( $(nproc) < 4 ? $(nproc) : 4 ))" "$root/libexec/umami-thumb"
 fi
 show_picker() {
   # An image whose thumbnail could not be made is left out, as Omarchy does.

@@ -83,6 +83,7 @@ STUB
 # Stand-in for vips: makes an empty file where the thumbnail should go.
 image=$1; out=${!#}; out=${out%%\[*}
 echo "vips ${image##*/} $*" >>"$CALLS"
+echo "limits mem=$(ulimit -v) cpu=$(ulimit -t)" >>"$CALLS"
 [[ -n ${FAKE_VIPS_FAIL:-} && $image == *"$FAKE_VIPS_FAIL"* ]] && exit 1
 : >"$out"
 STUB
@@ -1017,6 +1018,36 @@ test_an_older_plugin_version_is_refreshed_by_first_run() {
   assert "set up again" "$ROOT/bin/umami-install" --check
   refute "old rows gone" grep -q 'Old Folder' "$MENU"
   refute "no setup window for an update" grep -q '^float' "$CALLS"
+}
+
+test_thumbnail_workers_run_under_hard_memory_and_cpu_limits() {
+  mkdir -p "$T/in"; : >"$T/in/a.png"
+  "$ROOT/libexec/umami-thumb" "$T/in/a.png" "$T/a.jpg"
+  assert "vips ran with a 1 GiB ceiling and a CPU limit" grep -qx 'limits mem=1048576 cpu=30' "$CALLS"
+  assert "thumbnail made" test -f "$T/a.jpg"
+}
+test_a_huge_file_is_skipped_not_decoded() {
+  mkdir -p "$T/in"; printf 'x' >"$T/in/big.png"
+  UMAMI_THUMB_MAX_BYTES=0 "$ROOT/libexec/umami-thumb" "$T/in/big.png" "$T/big.jpg"
+  refute "vips started for it" grep -q '^vips big.png' "$CALLS"
+  refute "no thumbnail" test -f "$T/big.jpg"
+}
+test_a_memory_bomb_png_is_stopped_by_the_ceiling() {
+  command -v vips >/dev/null || { echo "      (skipped: needs libvips)"; return 0; }
+  python3 - "$T/bomb.png" <<'PY' || { echo "      (skipped: needs python3)"; return 0; }
+import sys, zlib, struct
+def chunk(t, d):
+    c = struct.pack(">I", len(d)) + t + d
+    return c + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+z = zlib.compress(b"A" * (40 << 20), 1)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 2, 0, 0, 0))
+for i in range(40): png += chunk(b"zTXt", b"k%d\0\0" % i + z)
+png += chunk(b"IDAT", zlib.compress(b"".join(b"\0" + b"\x80" * 192 for _ in range(64)))) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(png)
+PY
+  # The real vipsthumbnail, not the stand-in: the ceiling must stop it near 1 GiB.
+  PATH=${PATH#"$T/bin:"} UMAMI_THUMB_MEM_KB=1048576 "$ROOT/libexec/umami-thumb" "$T/bomb.png" "$T/bomb.jpg"
+  refute "no thumbnail from the bomb" test -f "$T/bomb.jpg"
 }
 
 # ---- runner -------------------------------------------------------------------

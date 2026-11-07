@@ -7,7 +7,19 @@ thumb=${2:?usage: umami-thumb <image> <thumbnail>}
 tmp="$thumb.$$.jpg"
 umask 077 # a thumbnail is a copy of your picture: owner only
 
-if VIPS_CONCURRENCY=1 vipsthumbnail "$image" --size 768x432 --smartcrop=centre --path "${tmp}[Q=82,strip]" 2>/dev/null; then
+# The picture may not be one we trust (a folder of downloads, a crafted PNG whose
+# metadata inflates to gigabytes while it is read). Each worker gets a hard
+# ceiling, so the worst case is that one thumbnail is skipped, not an
+# out-of-memory machine. 1 GiB is ten times what an 8K wallpaper needs.
+UMAMI_THUMB_MEM_KB=${UMAMI_THUMB_MEM_KB:-1048576}
+UMAMI_THUMB_CPU_SEC=${UMAMI_THUMB_CPU_SEC:-30}
+UMAMI_THUMB_MAX_BYTES=${UMAMI_THUMB_MAX_BYTES:-268435456}
+ulimit -v "$UMAMI_THUMB_MEM_KB" 2>/dev/null || exit 0 # no ceiling, no thumbnail
+ulimit -t "$UMAMI_THUMB_CPU_SEC" 2>/dev/null || exit 0
+size=$(stat -L -c %s -- "$image" 2>/dev/null) || exit 0
+((size <= UMAMI_THUMB_MAX_BYTES)) || exit 0
+
+if VIPS_CONCURRENCY=1 timeout 60 vipsthumbnail "$image" --size 768x432 --smartcrop=centre --path "${tmp}[Q=82,strip]" 2>/dev/null; then
   mv -f -- "$tmp" "$thumb"
 else
   rm -f -- "$tmp"

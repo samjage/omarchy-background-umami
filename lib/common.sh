@@ -142,6 +142,27 @@ umami_custom_folders() {
 # copy rather than remembering a past check means there is no cache to forge and
 # no gap between checking and using.
 UMAMI_APPLIED="$UMAMI_CACHE/applied"
+# A file in the applied folder is trusted only if its folder carries this marker,
+# written after the clean step succeeded. Folders made by older versions held
+# original image bytes and have no marker, so they are never trusted.
+UMAMI_CLEAN_MARK=".clean-v1"
+
+umami_is_clean_copy() { [[ -f $1 && -f $(dirname -- "$1")/$UMAMI_CLEAN_MARK ]]; }
+
+# Remove everything in the applied folder that is not a marked clean copy, except
+# the file now showing (deleting it would leave the wallpaper link dangling; it is
+# re-cleaned before it can ever be applied again).
+umami_applied_migrate() {
+  local root dir current
+  root=$(umami_applied_root)
+  [[ -d $root ]] || return 0
+  current=$(dirname -- "$(umami_current_background)")
+  while IFS= read -r -d '' dir; do
+    [[ -f $dir/$UMAMI_CLEAN_MARK || $dir == "$current" ]] || rm -rf -- "$dir"
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+  find "$root" -mindepth 1 -maxdepth 1 ! -type d -delete 2>/dev/null
+  return 0
+}
 
 umami_applied_root() { readlink -f -- "$UMAMI_APPLIED" 2>/dev/null || printf '%s' "$UMAMI_APPLIED"; }
 
@@ -173,7 +194,7 @@ umami_apply() {
   mkdir -p "$UMAMI_APPLIED" && chmod 700 "$UMAMI_APPLIED" || return 1
   applied=$(umami_applied_root)
   real=$(readlink -f -- "$2" 2>/dev/null) || return 1
-  if [[ $real == "$applied"/* ]]; then # one of our own clean images
+  if [[ $real == "$applied"/* ]] && umami_is_clean_copy "$real"; then # one of our own, marked clean images
     omarchy-theme-bg-set "$real" || return 1
     printf '%s' "$real"
     return 0
@@ -190,12 +211,14 @@ umami_apply() {
     (($(stat -c %s -- "$dir/source.$ext") <= max)) &&
     printf '%s\n' "$real" >"$dir/origin" &&
     "$root/libexec/umami-clean" "$dir/source.$ext" "$clean" &&
-    [[ -s $clean ]]; } 2>/dev/null; then
+    [[ -s $clean ]] &&
+    : >"$dir/$UMAMI_CLEAN_MARK"; } 2>/dev/null; then
     rm -rf -- "$dir"
     return 1
   fi
   rm -f -- "$dir/source.$ext"
   omarchy-theme-bg-set "$clean" || { rm -rf -- "$dir"; return 1; }
+  umami_applied_migrate
   umami_applied_prune
   printf '%s' "$clean"
 }

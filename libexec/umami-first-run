@@ -31,6 +31,9 @@ block_is_stale() {
   [[ $(umami_menu_block_state "$file") == "one" && -f $UMAMI_HOOK ]]
 }
 
+# Folders left by older versions held original image bytes: clear them on every load.
+umami_applied_migrate
+
 if ! "$root/bin/umami-install" --check; then
   if block_is_stale; then
     if "$root/bin/umami-install" --yes </dev/null >/dev/null 2>&1; then

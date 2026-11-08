@@ -1158,6 +1158,53 @@ test_the_clean_step_runs_under_hard_limits() {
   assert "the clean step is capped (1 GiB watched, 4 GiB backstop)" grep -qx 'limits mem=4194304' "$CALLS"
 }
 
+# ---- files left in the cache by older versions ---------------------------------
+legacy_copy() { # a folder as 0.1.6/0.1.7 left it: the ORIGINAL bytes, no clean marker
+  local d=$XDG_CACHE_HOME/omarchy-background-umami/applied/legacy1
+  mkdir -p "$d"; chmod 700 "$XDG_CACHE_HOME/omarchy-background-umami/applied"
+  printf '%s' "${1:-original-bytes}" >"$d/photo.png"; printf '/somewhere/photo.png\n' >"$d/origin"
+  printf '%s' "$d/photo.png"
+}
+test_an_unmarked_file_in_the_applied_cache_is_cleaned_again_never_trusted() {
+  source "$ROOT/lib/common.sh"
+  old=$(legacy_copy)
+  set_to=$(umami_apply "$ROOT" "$old") || fail "refused"
+  assert "it went through the clean step again" grep -q '^vips-clean source.png -> photo' "$CALLS"
+  assert "what is set is a new, marked copy" test -f "$(dirname "$set_to")/.clean-v1"
+  refute "the legacy file was set as it was" test "$set_to" = "$old"
+}
+test_old_unmarked_cache_folders_are_removed_on_load_but_clean_ones_stay() {
+  source "$ROOT/lib/common.sh"
+  old=$(legacy_copy)
+  printf 'x' >"$HOME/a.jpg"; kept=$(umami_apply "$ROOT" "$HOME/a.jpg") || fail "apply failed"
+  set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"
+  "$ROOT/libexec/umami-first-run" >/dev/null 2>&1
+  refute "the legacy original is still there" test -e "$old"
+  assert "the marked clean copy stays" test -f "$kept"
+}
+test_a_legacy_original_with_post_image_text_chunks_never_reaches_the_shell() {
+  if ! command -v vips >/dev/null || ! command -v python3 >/dev/null; then echo "      (skipped: needs libvips and python3)"; return 0; fi
+  python3 - "$T/post.png" <<'PY'
+import sys, zlib, struct
+def chunk(t, d):
+    c = struct.pack(">I", len(d)) + t + d
+    return c + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+z = zlib.compress(b"A" * 7_900_000, 9)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 2, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(b"".join(b"\0" + b"\x80" * 192 for _ in range(64))))
+for i in range(100): png += chunk(b"zTXt", b"k%d\0\0" % i + z)
+open(sys.argv[1], "wb").write(png + chunk(b"IEND", b""))
+PY
+  source "$ROOT/lib/common.sh"
+  old=$(legacy_copy); cp "$T/post.png" "$old"           # what 0.1.7 stored
+  set_current "$old"                                    # and it is "selected" across the upgrade
+  real_path=${PATH#"$T/bin:"}
+  # "Nevermind" restores the previous background through umami_apply:
+  set_to=$(PATH=$real_path umami_apply "$ROOT" "$(umami_current_background)" 2>/dev/null) || fail "refused"
+  assert "the shell gets a tiny clean file" test "$(stat -c %s "$set_to")" -lt 10000
+  refute "no text chunk survives" grep -qa 'zTXt\|tEXt\|iTXt' "$set_to"
+}
+
 # Omarchy 4.5 renamed style.background to appearance.background.
 use_omarchy_45() { cp "$FIXTURES/default-menu-4.5.jsonc" "$OMARCHY_PATH/default/omarchy/omarchy-menu.jsonc"; }
 test_omarchy_45_rows_go_under_appearance() {

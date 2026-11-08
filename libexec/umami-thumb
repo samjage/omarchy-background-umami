@@ -2,6 +2,8 @@
 # Make one 768x432 thumbnail: umami-thumb <image> <thumbnail>
 # Written to a temporary name first, so a half-made file is never mistaken for a thumbnail.
 
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/limits.sh"
 image=${1:?usage: umami-thumb <image> <thumbnail>}
 thumb=${2:?usage: umami-thumb <image> <thumbnail>}
 tmp="$thumb.$$.jpg"
@@ -12,14 +14,12 @@ umask 077 # a thumbnail is a copy of your picture: owner only
 # ceiling, so the worst case is that one thumbnail is skipped, not an
 # out-of-memory machine. 512 MiB is several times what even a 16K wallpaper needs.
 UMAMI_THUMB_MEM_KB=${UMAMI_THUMB_MEM_KB:-524288}
-UMAMI_THUMB_CPU_SEC=${UMAMI_THUMB_CPU_SEC:-30}
+UMAMI_THUMB_SECONDS=${UMAMI_THUMB_SECONDS:-60}
 UMAMI_THUMB_MAX_BYTES=${UMAMI_THUMB_MAX_BYTES:-268435456}
-ulimit -v "$UMAMI_THUMB_MEM_KB" 2>/dev/null || exit 0 # no ceiling, no thumbnail
-ulimit -t "$UMAMI_THUMB_CPU_SEC" 2>/dev/null || exit 0
 size=$(stat -L -c %s -- "$image" 2>/dev/null) || exit 0
 ((size <= UMAMI_THUMB_MAX_BYTES)) || exit 0
 
-if VIPS_CONCURRENCY=1 timeout 60 vipsthumbnail "$image" --size 768x432 --smartcrop=centre --path "${tmp}[Q=82,strip]" 2>/dev/null; then
+if umami_run_limited "$UMAMI_THUMB_MEM_KB" "$UMAMI_THUMB_SECONDS" env VIPS_CONCURRENCY=1 vipsthumbnail "$image" --size 768x432 --smartcrop=centre --path "${tmp}[Q=82,strip]" >/dev/null 2>&1; then
   mv -f -- "$tmp" "$thumb"
 else
   rm -f -- "$tmp"

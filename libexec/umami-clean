@@ -10,23 +10,23 @@
 # is one (quality 95). Color profiles are dropped, and an animated image becomes
 # its first frame.
 #
-# Runs under a memory ceiling, a CPU limit and a timeout, and refuses images with
+# Runs under a memory cap (watched, and stopped without a crash report) and a time limit, and refuses images with
 # more than 150 million pixels. Writes to a temporary name first, so a half-made
 # file is never mistaken for a clean one. Exits non-zero and leaves nothing if
 # the image cannot be decoded within those limits.
 
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+source "$root/lib/limits.sh"
 in=${1:?usage: umami-clean <image> <clean image>}
 out=${2:?usage: umami-clean <image> <clean image>}
 umask 077 # a copy of your picture: owner only
 
 UMAMI_CLEAN_MEM_KB=${UMAMI_CLEAN_MEM_KB:-1048576}
-UMAMI_CLEAN_CPU_SEC=${UMAMI_CLEAN_CPU_SEC:-60}
+UMAMI_CLEAN_SECONDS=${UMAMI_CLEAN_SECONDS:-90}
 UMAMI_MAX_PIXELS=${UMAMI_MAX_PIXELS:-150000000}
-ulimit -v "$UMAMI_CLEAN_MEM_KB" 2>/dev/null || exit 1 # no ceiling, no image
-ulimit -t "$UMAMI_CLEAN_CPU_SEC" 2>/dev/null || exit 1
 
-width=$(timeout 30 vipsheader -f width "$in" 2>/dev/null) || exit 1
-height=$(timeout 30 vipsheader -f height "$in" 2>/dev/null) || exit 1
+width=$(umami_run_limited "$UMAMI_CLEAN_MEM_KB" 30 vipsheader -f width "$in" 2>/dev/null) || exit 1
+height=$(umami_run_limited "$UMAMI_CLEAN_MEM_KB" 30 vipsheader -f height "$in" 2>/dev/null) || exit 1
 [[ $width =~ ^[0-9]+$ && $height =~ ^[0-9]+$ ]] || exit 1
 ((width > 0 && height > 0 && width * height <= UMAMI_MAX_PIXELS)) || exit 1
 
@@ -39,7 +39,7 @@ case ${out,,} in
 esac
 tmp="${out%.*}.$$.${out##*.}"
 
-if VIPS_CONCURRENCY=1 timeout 90 vips copy "$load" "$tmp$save" >/dev/null 2>&1 && [[ -s $tmp ]]; then
+if umami_run_limited "$UMAMI_CLEAN_MEM_KB" "$UMAMI_CLEAN_SECONDS" env VIPS_CONCURRENCY=1 vips copy "$load" "$tmp$save" >/dev/null 2>&1 && [[ -s $tmp ]]; then
   mv -f -- "$tmp" "$out"
 else
   rm -f -- "$tmp"

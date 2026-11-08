@@ -85,7 +85,7 @@ STUB
 # Stand-in for vips: makes an empty file where the thumbnail should go.
 image=$1; out=${!#}; out=${out%%\[*}
 echo "vips ${image##*/} $*" >>"$CALLS"
-echo "limits mem=$(ulimit -v) cpu=$(ulimit -t)" >>"$CALLS"
+echo "limits mem=$(ulimit -v)" >>"$CALLS"
 [[ -n ${FAKE_VIPS_FAIL:-} && $image == *"$FAKE_VIPS_FAIL"* ]] && exit 1
 : >"$out"
 STUB
@@ -101,7 +101,7 @@ STUB
 [[ $1 == copy ]] || exit 0
 in=${2%%\[*}; out=${3%%\[*}
 echo "vips-clean ${in##*/} -> ${out##*/}" >>"$CALLS"
-echo "limits mem=$(ulimit -v) cpu=$(ulimit -t)" >>"$CALLS"
+echo "limits mem=$(ulimit -v)" >>"$CALLS"
 origin=$(head -n1 "$(dirname "$in")/origin" 2>/dev/null)
 [[ -n ${FAKE_VIPS_FAIL:-} && $origin == *"$FAKE_VIPS_FAIL"* ]] && exit 1
 { cat "$in"; printf x; } >"$out" # never empty, like a real decoded image
@@ -1155,7 +1155,7 @@ test_an_image_with_too_many_pixels_is_refused() {
 test_the_clean_step_runs_under_hard_limits() {
   mkdir -p "$HOME/walls"; printf x >"$HOME/walls/a.png"
   source "$ROOT/lib/common.sh"; umami_apply "$ROOT" "$HOME/walls/a.png" >/dev/null || fail "refused"
-  assert "memory and CPU ceilings applied to vips" grep -qx 'limits mem=1048576 cpu=60' "$CALLS"
+  assert "the clean step is capped (1 GiB watched, 4 GiB backstop)" grep -qx 'limits mem=4194304' "$CALLS"
 }
 
 # Omarchy 4.5 renamed style.background to appearance.background.
@@ -1205,7 +1205,7 @@ test_an_older_plugin_version_is_refreshed_by_first_run() {
 test_thumbnail_workers_run_under_hard_memory_and_cpu_limits() {
   mkdir -p "$T/in"; : >"$T/in/a.png"
   "$ROOT/libexec/umami-thumb" "$T/in/a.png" "$T/a.jpg"
-  assert "vips ran with a 512 MiB ceiling and a CPU limit" grep -qx 'limits mem=524288 cpu=30' "$CALLS"
+  assert "vips ran under a watched 512 MiB cap with a 2 GiB backstop" grep -qx 'limits mem=2097152' "$CALLS"
   assert "thumbnail made" test -f "$T/a.jpg"
 }
 test_a_huge_file_is_skipped_not_decoded() {

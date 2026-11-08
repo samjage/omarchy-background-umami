@@ -18,7 +18,7 @@ rm -f -- "$UMAMI_STATE/offered" # so adding the plugin again offers setup again
 umami_menu_uninstall
 umami_hook_uninstall
 umami_shuffle_units_remove
-echo "Style → Background is back to stock."
+echo "$(umami_bg_label) → Background is back to stock."
 
 if [[ ${1:-} == "--purge" ]]; then
   rm -rf -- "$UMAMI_STATE" "$UMAMI_CACHE" "$UMAMI_CONFIG"

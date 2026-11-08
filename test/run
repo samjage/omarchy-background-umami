@@ -1044,6 +1044,67 @@ test_old_private_copies_are_pruned_but_the_one_showing_is_kept() {
   assert "the one showing is kept" test -f "$(readlink -f "$XDG_STATE_HOME/omarchy/current/background")"
 }
 
+test_text_with_a_hostile_file_name_is_shown_as_plain_bounded_text() {
+  source "$ROOT/lib/common.sh"
+  out=$(umami_plain $'bad\x1b]0;PWNED\x07name\nline')
+  [[ $out != *$'\x1b'* && $out != *$'\x07'* && $out != *$'\n'* ]] || fail "control characters survived: $(printf %q "$out")"
+  assert "bounded" test "$(umami_plain "$(printf 'x%.0s' {1..1000})" | wc -c)" -le 300
+  # and the sinks use it
+  ( umami_die $'oops\x1b[31m' ) 2>"$T/err" || true
+  refute "an escape reached stderr" grep -q $'\x1b' "$T/err"
+  : >"$CALLS"; umami_notify $'toast\x1b[2J'
+  refute "an escape reached the notification" grep -q $'\x1b' "$CALLS"
+}
+test_applying_never_reads_more_than_the_size_cap() {
+  mkdir -p "$HOME/walls"; head -c 5000 /dev/zero >"$HOME/walls/big.jpg"; head -c 900 /dev/zero >"$HOME/walls/small.jpg"
+  source "$ROOT/lib/common.sh"
+  UMAMI_THUMB_MAX_BYTES=1000 umami_apply "$ROOT" "$HOME/walls/big.jpg" && fail "a file over the cap was applied"
+  UMAMI_THUMB_MAX_BYTES=1000 umami_apply "$ROOT" "$HOME/walls/small.jpg" >/dev/null || fail "a file under the cap was refused"
+  # The race: the file passes the size check, then grows (or is swapped for a huge one) before it is copied.
+  # A stand-in stat reports a small size the first time only, which is exactly that window.
+  # Defense in depth: umami-thumb refuses an over-cap copy as well, so this also passes without the
+  # bounded read; the bounded read is what stops a growing file from filling the disk while it is copied.
+  cat >"$T/bin/stat" <<STUB
+#!/bin/bash
+if [[ \$* == *"%s"* && ! -e "$T/stat-lied" ]]; then : >"$T/stat-lied"; echo 10; exit 0; fi
+exec /usr/bin/stat "\$@"
+STUB
+  chmod +x "$T/bin/stat"; : >"$CALLS"
+  UMAMI_THUMB_MAX_BYTES=1000 umami_apply "$ROOT" "$HOME/walls/big.jpg" && fail "a file that grew after the size check was applied"
+  refute "the oversized copy was kept" bash -c "find '$XDG_CACHE_HOME/omarchy-background-umami/applied' -type f -size +1000c | grep -q ."
+}
+test_the_thumbnail_cache_is_pruned_by_age_and_count() {
+  source "$ROOT/lib/common.sh"; umami_private_cache
+  d=$XDG_CACHE_HOME/omarchy-background-umami/thumbs
+  : >"$d/old.jpg"; touch -d '60 days ago' "$d/old.jpg"; : >"$d/fresh.jpg"
+  umami_prune_thumbs
+  assert "old thumbnail dropped" test ! -e "$d/old.jpg"
+  assert "fresh thumbnail kept" test -e "$d/fresh.jpg"
+  for i in $(seq 1 4010); do : >"$d/n$i.jpg"; done
+  umami_prune_thumbs
+  assert "at most 4000 kept" test "$(find "$d" -type f | wc -l)" -le 4000
+}
+test_the_pickers_answer_files_are_private_not_in_tmp() {
+  mkdir -p "$T/stage"; : >"$T/stage/a.jpg"
+  TMPDIR=$T/unused "$ROOT/libexec/umami-pick" "$T/stage" >/dev/null 2>&1
+  refute "a temp file in /tmp or TMPDIR" bash -c "ls '$T/unused' 2>/dev/null | grep -q ."
+  assert "answer folder was cleaned up" bash -c "! ls '$XDG_CACHE_HOME/omarchy-background-umami' | grep -q '^pick\\.'"
+}
+# shellcheck disable=SC2016  # the $( ) and backticks are file names, not code
+test_hostile_file_names_never_run_commands() {
+  mkdir -p "$HOME/walls" "$T/cwd"
+  cd "$T/cwd" || return 1
+  printf x >"$HOME/walls"'/$(echo>PWN1).jpg'; printf x >"$HOME/walls"'/`echo>PWN2`.jpg'; printf x >"$HOME/walls"'/;echo>PWN3;.jpg'
+  printf x >"$HOME/walls"'/a b.jpg'; printf x >"$HOME/walls"'/x'"'"' ; echo>PWN4 ; '"'"'.jpg'; printf x >"$HOME/walls"'/-rf.jpg'
+  mkdir -p "$CONFIG"; printf '%s\n' "$HOME/walls" >"$CONFIG/folders"
+  mkdir -p "$STATE"; printf 'folder\n' >"$STATE/shuffle.scope"
+  for i in 1 2 3 4 5 6 7 8; do "$ROOT/libexec/umami-shuffle" now >/dev/null 2>&1; done
+  echo "$HOME/walls"'/$(echo>PWN1).jpg' >"$(pin_file)"; set_current "$OMARCHY_PATH/themes/gruvbox/backgrounds/a.jpg"
+  "$ROOT/libexec/umami-pin-apply" t >/dev/null 2>&1
+  refute "a command in a file name ran" bash -c "find '$T' '$HOME' -name 'PWN*' -not -path '$HOME/walls/*' | grep -q ."
+  assert "they were applied like any other file" test "$(applied | wc -l)" -ge 6
+}
+
 # Omarchy 4.5 renamed style.background to appearance.background.
 use_omarchy_45() { cp "$FIXTURES/default-menu-4.5.jsonc" "$OMARCHY_PATH/default/omarchy/omarchy-menu.jsonc"; }
 test_omarchy_45_rows_go_under_appearance() {

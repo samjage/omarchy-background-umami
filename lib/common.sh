@@ -30,12 +30,28 @@ umami_current_background() { readlink -f "$OMARCHY_STATE/current/background" 2>/
 umami_private_cache() {
   mkdir -p "$UMAMI_CACHE/thumbs" && chmod 700 "$UMAMI_CACHE" "$UMAMI_CACHE/thumbs"
 }
-umami_notify() { omarchy-notification-send "$1" -t 3000 2>/dev/null || true; }
+# Text that may contain a file name is shown as plain, bounded text: control
+# characters (terminal escape sequences, newlines) become "?" and it is cut at
+# 300 characters, so a hostile name cannot repaint the terminal or flood a toast.
+# Thumbnails of files that changed or went away would pile up forever. Drop the
+# ones not used for 30 days, and keep at most 4000 (about 400 MB), oldest first.
+# umami-pick touches the thumbnails it shows, so those in use stay.
+umami_prune_thumbs() {
+  local dir="$UMAMI_CACHE/thumbs" f
+  [[ -d $dir ]] || return 0
+  find "$dir" -maxdepth 1 -type f -name '*.jpg' -mtime +30 -delete 2>/dev/null
+  while IFS= read -r f; do rm -f -- "$f"; done < <(
+    find "$dir" -maxdepth 1 -type f -name '*.jpg' -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +4001 | cut -d' ' -f2-)
+  return 0
+}
+
+umami_plain() { local t=${*//[[:cntrl:]]/?}; printf '%s' "${t:0:300}"; }
+umami_notify() { omarchy-notification-send "$(umami_plain "$1")" -t 3000 2>/dev/null || true; }
 
 # Report a problem where the user will see it: the terminal, or a notification
 # when we were started from a menu row.
 umami_die() {
-  echo "umami: $*" >&2
+  echo "umami: $(umami_plain "$*")" >&2
   [[ -t 2 ]] || umami_notify "Umami: $*"
   exit 1
 }
@@ -145,7 +161,7 @@ umami_applied_prune() {
 # umami_apply <plugin root> <image>: set it as the wallpaper if it is safe to.
 # Prints the path that was set. Returns non-zero (and sets nothing) otherwise.
 umami_apply() {
-  local root=$1 real dir copy applied size
+  local root=$1 real dir copy applied size max
   mkdir -p "$UMAMI_APPLIED" && chmod 700 "$UMAMI_APPLIED" || return 1
   applied=$(umami_applied_root)
   real=$(readlink -f -- "$2" 2>/dev/null) || return 1
@@ -159,7 +175,11 @@ umami_apply() {
   ((size <= ${UMAMI_THUMB_MAX_BYTES:-268435456})) || return 1
   dir=$(mktemp -d "$applied/XXXXXXXX") || return 1
   copy="$dir/${real##*/}"
-  if ! { timeout 30 cp -- "$real" "$copy" &&
+  # Read at most the cap plus one byte, so a file that grows (or was swapped for
+  # a huge one) after the size check above still cannot fill the disk.
+  max=${UMAMI_THUMB_MAX_BYTES:-268435456}
+  if ! { timeout 30 head -c "$((max + 1))" -- "$real" >"$copy" &&
+    (($(stat -c %s -- "$copy") <= max)) &&
     printf '%s\n' "$real" >"$dir/origin" &&
     "$root/libexec/umami-thumb" "$copy" "$dir/.check.jpg" &&
     [[ -f $dir/.check.jpg ]]; } 2>/dev/null; then

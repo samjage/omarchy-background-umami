@@ -119,6 +119,7 @@ Nothing else is changed, and no network access is used.
 - Only images inside a theme's `backgrounds/` folder count as theme wallpapers, so previews and README art never show up.
 - The carousel is Omarchy's own picker, fed lighter thumbnails (768×432 instead of 1536×864), so scrolling through hundreds of wallpapers takes about a tenth of the extra memory. The first look at a new folder makes them, then they're cached.
 - Before any wallpaper is set (Apply, Shuffle, Restore, or a saved pick coming back after a theme change), Umami copies it into its private cache folder and runs the same limited check on the copy; only the copy is set. A file that fails the check is skipped, and a file that was changed or replaced since you picked it is checked again. Omarchy's own unlimited picker is never used on your folders.
+- Error messages and notifications show file names as plain, length-limited text (control characters such as terminal escape sequences are replaced), and the thumbnail cache is trimmed automatically (30 days, 4000 files).
 - Thumbnails are made by separate workers (at most 4) that each get a hard 512 MiB memory ceiling, a CPU limit and a 256 MB file-size cap, so a malicious or broken image in your folder is skipped instead of exhausting memory.
 - Your wallpaper folder is searched up to 4 levels deep, capped at 2000 images. It can't be `/` or your home folder.
 - If you later pick a wallpaper with the stock picker, Umami lets go of your earlier pick.

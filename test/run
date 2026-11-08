@@ -89,6 +89,23 @@ echo "limits mem=$(ulimit -v) cpu=$(ulimit -t)" >>"$CALLS"
 [[ -n ${FAKE_VIPS_FAIL:-} && $image == *"$FAKE_VIPS_FAIL"* ]] && exit 1
 : >"$out"
 STUB
+  # Stand-ins for the clean-copy step: vipsheader reports a small image, and
+  # "vips copy" writes the output, refusing when the ORIGINAL (named in the copy's
+  # origin file) contains $FAKE_VIPS_FAIL, as an image libvips cannot decode would.
+  cat >"$T/bin/vipsheader" <<'STUB'
+#!/bin/bash
+echo 100
+STUB
+  cat >"$T/bin/vips" <<'STUB'
+#!/bin/bash
+[[ $1 == copy ]] || exit 0
+in=${2%%\[*}; out=${3%%\[*}
+echo "vips-clean ${in##*/} -> ${out##*/}" >>"$CALLS"
+echo "limits mem=$(ulimit -v) cpu=$(ulimit -t)" >>"$CALLS"
+origin=$(head -n1 "$(dirname "$in")/origin" 2>/dev/null)
+[[ -n ${FAKE_VIPS_FAIL:-} && $origin == *"$FAKE_VIPS_FAIL"* ]] && exit 1
+{ cat "$in"; printf x; } >"$out" # never empty, like a real decoded image
+STUB
   cat >"$T/bin/gum" <<'STUB'
 #!/bin/bash
 # Stand-in for gum choose. Records every menu it is shown, and answers from
@@ -1030,7 +1047,7 @@ test_what_is_applied_is_a_private_copy_the_folder_cannot_change() {
   copy=$(applied_raw | tail -n1)
   assert "set from the private cache" grep -q "^$XDG_CACHE_HOME/omarchy-background-umami/applied/" <<<"$copy"
   printf two >"$HOME/walls/a.jpg"
-  assert "the copy is unchanged" test "$(cat "$copy")" = one
+  assert "the copy is unchanged" test "$(head -c 3 "$copy")" = one
   assert "the folder is private" test "$(stat -c %a "$XDG_CACHE_HOME/omarchy-background-umami/applied")" = 700
 }
 test_old_private_copies_are_pruned_but_the_one_showing_is_kept() {
@@ -1103,6 +1120,42 @@ test_hostile_file_names_never_run_commands() {
   "$ROOT/libexec/umami-pin-apply" t >/dev/null 2>&1
   refute "a command in a file name ran" bash -c "find '$T' '$HOME' -name 'PWN*' -not -path '$HOME/walls/*' | grep -q ."
   assert "they were applied like any other file" test "$(applied | wc -l)" -ge 6
+}
+
+test_the_shell_is_given_a_clean_image_never_the_original() {
+  if ! command -v vips >/dev/null || ! command -v python3 >/dev/null; then echo "      (skipped: needs libvips and python3)"; return 0; fi
+  # A PNG whose text chunks come AFTER the pixel data. libvips never reads them, Qt (the shell) does and
+  # keeps them: 100 chunks just under libpng's 8 MB limit made Qt use 3.9 GB from a 0.8 MB file.
+  python3 - "$T/post.png" <<'PY'
+import sys, zlib, struct
+def chunk(t, d):
+    c = struct.pack(">I", len(d)) + t + d
+    return c + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+z = zlib.compress(b"A" * 7_900_000, 9)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 2, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(b"".join(b"\0" + b"\x80" * 192 for _ in range(64))))
+for i in range(100): png += chunk(b"zTXt", b"k%d\0\0" % i + z)
+open(sys.argv[1], "wb").write(png + chunk(b"IEND", b""))
+PY
+  source "$ROOT/lib/common.sh"
+  # the real libvips tools, not the stand-ins
+  local real_path=${PATH#"$T/bin:"} set_to
+  set_to=$(PATH=$real_path umami_apply "$ROOT" "$T/post.png" 2>/dev/null) || fail "a valid image was refused"
+  [[ $set_to == "$XDG_CACHE_HOME"/omarchy-background-umami/applied/* ]] || fail "not set from the private folder: $set_to"
+  assert "the shell's file is tiny (the 790 MB of text chunks are gone)" test "$(stat -c %s "$set_to")" -lt 10000
+  refute "no text chunk survives" grep -qa 'zTXt\|tEXt\|iTXt' "$set_to"
+  assert "still a 64 pixel wide image" test "$(PATH=$real_path vipsheader -f width "$set_to" 2>/dev/null)" = 64
+}
+test_an_image_with_too_many_pixels_is_refused() {
+  mkdir -p "$HOME/walls"; printf x >"$HOME/walls/huge.png"
+  source "$ROOT/lib/common.sh"
+  UMAMI_MAX_PIXELS=50 umami_apply "$ROOT" "$HOME/walls/huge.png" && fail "an oversized image was applied"
+  refute "nothing set" grep -q '^bg-set' "$CALLS"
+}
+test_the_clean_step_runs_under_hard_limits() {
+  mkdir -p "$HOME/walls"; printf x >"$HOME/walls/a.png"
+  source "$ROOT/lib/common.sh"; umami_apply "$ROOT" "$HOME/walls/a.png" >/dev/null || fail "refused"
+  assert "memory and CPU ceilings applied to vips" grep -qx 'limits mem=1048576 cpu=60' "$CALLS"
 }
 
 # Omarchy 4.5 renamed style.background to appearance.background.

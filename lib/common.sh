@@ -160,36 +160,44 @@ umami_applied_prune() {
 
 # umami_apply <plugin root> <image>: set it as the wallpaper if it is safe to.
 # Prints the path that was set. Returns non-zero (and sets nothing) otherwise.
+#
+# What is set is never the original file. The shell decodes with Qt, which reads
+# parts of an image (PNG text chunks after the pixel data, for one) that the
+# libvips check never touches, so passing the check proves nothing about Qt. So:
+# copy the file into the private folder (a hard byte cap, so nobody can swap it
+# or grow it), decode it with libvips under memory/CPU limits, write a fresh
+# clean image holding only the pixels (umami-clean), delete the copy, and set the
+# clean image. If any step fails, nothing is set.
 umami_apply() {
-  local root=$1 real dir copy applied size max
+  local root=$1 real dir applied size max name stem ext clean
   mkdir -p "$UMAMI_APPLIED" && chmod 700 "$UMAMI_APPLIED" || return 1
   applied=$(umami_applied_root)
   real=$(readlink -f -- "$2" 2>/dev/null) || return 1
-  if [[ $real == "$applied"/* ]]; then # one of our own checked copies
+  if [[ $real == "$applied"/* ]]; then # one of our own clean images
     omarchy-theme-bg-set "$real" || return 1
     printf '%s' "$real"
     return 0
   fi
   [[ -f $real ]] || return 1
-  size=$(stat -c %s -- "$real" 2>/dev/null) || return 1
-  ((size <= ${UMAMI_THUMB_MAX_BYTES:-268435456})) || return 1
-  dir=$(mktemp -d "$applied/XXXXXXXX") || return 1
-  copy="$dir/${real##*/}"
-  # Read at most the cap plus one byte, so a file that grows (or was swapped for
-  # a huge one) after the size check above still cannot fill the disk.
   max=${UMAMI_THUMB_MAX_BYTES:-268435456}
-  if ! { timeout 30 head -c "$((max + 1))" -- "$real" >"$copy" &&
-    (($(stat -c %s -- "$copy") <= max)) &&
+  size=$(stat -c %s -- "$real" 2>/dev/null) || return 1
+  ((size <= max)) || return 1
+  dir=$(mktemp -d "$applied/XXXXXXXX") || return 1
+  name=${real##*/}; stem=${name%.*}; ext=${name##*.}
+  [[ $name == *.* ]] || { stem=$name; ext=img; }
+  case ${ext,,} in jpg | jpeg) clean="$dir/$stem.jpg" ;; *) clean="$dir/$stem.png" ;; esac
+  if ! { timeout 30 head -c "$((max + 1))" -- "$real" >"$dir/source.$ext" &&
+    (($(stat -c %s -- "$dir/source.$ext") <= max)) &&
     printf '%s\n' "$real" >"$dir/origin" &&
-    "$root/libexec/umami-thumb" "$copy" "$dir/.check.jpg" &&
-    [[ -f $dir/.check.jpg ]]; } 2>/dev/null; then
+    "$root/libexec/umami-clean" "$dir/source.$ext" "$clean" &&
+    [[ -s $clean ]]; } 2>/dev/null; then
     rm -rf -- "$dir"
     return 1
   fi
-  rm -f -- "$dir/.check.jpg"
-  omarchy-theme-bg-set "$copy" || { rm -rf -- "$dir"; return 1; }
+  rm -f -- "$dir/source.$ext"
+  omarchy-theme-bg-set "$clean" || { rm -rf -- "$dir"; return 1; }
   umami_applied_prune
-  printf '%s' "$copy"
+  printf '%s' "$clean"
 }
 
 # The file a wallpaper was made from: for one of our copies, the original path;

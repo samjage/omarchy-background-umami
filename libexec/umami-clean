@@ -1,0 +1,47 @@
+#!/bin/bash
+# Make a clean copy of an image: umami-clean <image> <clean image>
+#
+# The shell decodes whatever it is given with Qt, and Qt reads parts of a file
+# that libvips never looks at (for example PNG text chunks placed after the image
+# data), so checking an image with libvips does not prove Qt will cope with it.
+# So the shell is never given the original. This decodes the image with libvips
+# and writes a fresh file holding only the pixels: no metadata, no extra chunks,
+# nothing for a decoder to expand. The output is a PNG, or a JPEG when the source
+# is one (quality 95). Color profiles are dropped, and an animated image becomes
+# its first frame.
+#
+# Runs under a memory ceiling, a CPU limit and a timeout, and refuses images with
+# more than 150 million pixels. Writes to a temporary name first, so a half-made
+# file is never mistaken for a clean one. Exits non-zero and leaves nothing if
+# the image cannot be decoded within those limits.
+
+in=${1:?usage: umami-clean <image> <clean image>}
+out=${2:?usage: umami-clean <image> <clean image>}
+umask 077 # a copy of your picture: owner only
+
+UMAMI_CLEAN_MEM_KB=${UMAMI_CLEAN_MEM_KB:-1048576}
+UMAMI_CLEAN_CPU_SEC=${UMAMI_CLEAN_CPU_SEC:-60}
+UMAMI_MAX_PIXELS=${UMAMI_MAX_PIXELS:-150000000}
+ulimit -v "$UMAMI_CLEAN_MEM_KB" 2>/dev/null || exit 1 # no ceiling, no image
+ulimit -t "$UMAMI_CLEAN_CPU_SEC" 2>/dev/null || exit 1
+
+width=$(timeout 30 vipsheader -f width "$in" 2>/dev/null) || exit 1
+height=$(timeout 30 vipsheader -f height "$in" 2>/dev/null) || exit 1
+[[ $width =~ ^[0-9]+$ && $height =~ ^[0-9]+$ ]] || exit 1
+((width > 0 && height > 0 && width * height <= UMAMI_MAX_PIXELS)) || exit 1
+
+# Only these loaders can stream; for the rest vips picks its own way.
+load=$in
+case ${in,,} in *.png | *.jpg | *.jpeg) load="${in}[access=sequential]" ;; esac
+case ${out,,} in
+  *.jpg) save="[Q=95,strip,optimize_coding]" ;;
+  *) save="[strip,compression=1]" ;;
+esac
+tmp="${out%.*}.$$.${out##*.}"
+
+if VIPS_CONCURRENCY=1 timeout 90 vips copy "$load" "$tmp$save" >/dev/null 2>&1 && [[ -s $tmp ]]; then
+  mv -f -- "$tmp" "$out"
+else
+  rm -f -- "$tmp"
+  exit 1
+fi

@@ -179,6 +179,31 @@ umami_applied_prune() {
   return 0
 }
 
+# Clear state left by older releases, before anything else touches the cache.
+# The shell opens the current background when it starts, before plugin code
+# runs, so a link into an unmarked legacy folder has to go first: once Qt has
+# the decoder input, unlinking afterwards does not revoke it. Scripts that run
+# while the shell is up (the installer) call this too, so the link is gone
+# before the next start.
+umami_legacy_clean() {
+  local current_bg applied_root current_dir
+  if [[ -L $OMARCHY_STATE/current/background ]]; then
+    current_bg=$(readlink "$OMARCHY_STATE/current/background")
+    current_bg=$(readlink -f -- "$current_bg" 2>/dev/null || true)
+    applied_root=$(umami_applied_root)
+    if [[ -n $current_bg && $current_bg == "$applied_root"/* ]]; then
+      current_dir=$(dirname -- "$current_bg")
+      if [[ ! -f $current_dir/$UMAMI_CLEAN_MARK ]]; then
+        rm -f -- "$OMARCHY_STATE/current/background"
+      fi
+    fi
+  fi
+  umami_applied_migrate
+  if [[ -L $OMARCHY_STATE/current/background && ! -e $OMARCHY_STATE/current/background ]]; then
+    rm -f -- "$OMARCHY_STATE/current/background"
+  fi
+}
+
 # umami_apply <plugin root> <image>: set it as the wallpaper if it is safe to.
 # Prints the path that was set. Returns non-zero (and sets nothing) otherwise.
 #

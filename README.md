@@ -73,17 +73,26 @@ If that ends with `omarchy-shell is not responding`, the plugin was still added.
 OMARCHY_SHELL_IPC_TIMEOUT=15s omarchy plugin add https://github.com/samjage/omarchy-background-umami --enable
 ```
 
-**Updating:** run `omarchy plugin update`. That downloads the new plugin code.
+**Updating from 0.1.7 or earlier: one required extra step.** Omarchy's shell opens the current background when it starts, before any plugin code runs, and a release before 0.1.8 could leave that link pointing into an uncleaned cache folder. So the cleanup has to happen while the shell is not running:
 
-The next time the shell loads the plugin, `umami-first-run` checks whether your menu rows and theme hook match this version. If they're out of date, it rewrites them automatically — no setup window, no prompts. You don't need to do anything.
+```sh
+# From a TTY (Ctrl+Alt+F3), or after logging out:
+omarchy plugin update io.github.samjage.background-umami
+~/.config/omarchy/plugins/io.github.samjage.background-umami/bin/umami-install --yes
+# Then log back in / start the shell.
+```
 
-If the shell didn't reload the plugin (or the rows still look old), run it yourself once:
+`umami-install` removes that link and the old cache folders. It cannot be left to startup: the shell may already have opened the file by the time plugin code runs.
+
+**Every other update:** run `omarchy plugin update`. The next time the shell loads the plugin, `umami-first-run` checks whether your menu rows and theme hook match this version and rewrites them if not — no setup window, no prompts.
+
+If the shell didn't reload the plugin (or the rows still look old), run the installer yourself once:
 
 ```sh
 ~/.config/omarchy/plugins/io.github.samjage.background-umami/bin/umami-install --yes
 ```
 
-That rewires the menu rows for this version. It's safe to run any time — it won't duplicate rows or change your wallpaper folder.
+That rewires the menu rows for this version and clears any legacy background link. It's safe to run any time — it won't duplicate rows or change your wallpaper folder.
 
 ## Remove
 

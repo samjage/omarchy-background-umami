@@ -1335,6 +1335,26 @@ PY
   refute "no thumbnail from the bomb" test -f "$T/bomb.jpg"
 }
 
+# The cleanup must also run from the installer, so the documented upgrade step
+# clears the link while the shell is up — before a start can follow it.
+test_the_installer_clears_a_legacy_background_link_before_the_next_start() {
+  source "$ROOT/lib/common.sh"
+  old=$(legacy_copy)
+  set_current "$old"
+  assert "install succeeds" install_ok
+  refute "the legacy original directory was removed" test -e "$old"
+  refute "the background link was unlinked" test -L "$OMARCHY_STATE/current/background"
+}
+
+test_check_leaves_the_legacy_link_and_cache_alone() {
+  source "$ROOT/lib/common.sh"
+  old=$(legacy_copy)
+  set_current "$old"
+  "$ROOT/bin/umami-install" --check >/dev/null 2>&1 || true # 1 when not set up yet
+  assert "the link is untouched by --check" test -L "$OMARCHY_STATE/current/background"
+  assert "the legacy directory is untouched by --check" test -e "$old"
+}
+
 # ---- runner -------------------------------------------------------------------
 
 passed=0 failed=0

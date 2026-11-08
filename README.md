@@ -73,7 +73,17 @@ If that ends with `omarchy-shell is not responding`, the plugin was still added.
 OMARCHY_SHELL_IPC_TIMEOUT=15s omarchy plugin add https://github.com/samjage/omarchy-background-umami --enable
 ```
 
-**Updating:** run `omarchy plugin update`. The next time the shell loads the plugin, Umami notices its menu rows or theme hook are out of date and rewrites them by itself (it never opens the setup window for an update). Running the setup command above by hand is still safe at any time.
+**Updating:** run `omarchy plugin update`. That downloads the new plugin code.
+
+The next time the shell loads the plugin, `umami-first-run` checks whether your menu rows and theme hook match this version. If they're out of date, it rewrites them automatically — no setup window, no prompts. You don't need to do anything.
+
+If the shell didn't reload the plugin (or the rows still look old), run it yourself once:
+
+```sh
+~/.config/omarchy/plugins/io.github.samjage.background-umami/bin/umami-install --yes
+```
+
+That rewires the menu rows for this version. It's safe to run any time — it won't duplicate rows or change your wallpaper folder.
 
 ## Remove
 

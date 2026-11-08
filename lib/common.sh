@@ -158,7 +158,7 @@ umami_applied_migrate() {
   [[ -d $root ]] || return 0
   current=$(dirname -- "$(umami_current_background)")
   while IFS= read -r -d '' dir; do
-    [[ -f $dir/$UMAMI_CLEAN_MARK || $dir == "$current" ]] || rm -rf -- "$dir"
+    [[ -f $dir/$UMAMI_CLEAN_MARK ]] || rm -rf -- "$dir"
   done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
   find "$root" -mindepth 1 -maxdepth 1 ! -type d -delete 2>/dev/null
   return 0

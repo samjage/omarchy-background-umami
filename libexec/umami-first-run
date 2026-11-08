@@ -34,6 +34,13 @@ block_is_stale() {
 # Folders left by older versions held original image bytes: clear them on every load.
 umami_applied_migrate
 
+# If the current background now points at a removed legacy copy, drop the dangling
+# link so Omarchy falls back to its own default instead of loading original bytes.
+current_bg=$(umami_current_background 2>/dev/null)
+if [[ -n $current_bg && ! -f $current_bg ]]; then
+  rm -f -- "$OMARCHY_STATE/current/background"
+fi
+
 if ! "$root/bin/umami-install" --check; then
   if block_is_stale; then
     if "$root/bin/umami-install" --yes </dev/null >/dev/null 2>&1; then

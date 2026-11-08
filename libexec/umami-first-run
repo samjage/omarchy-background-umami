@@ -39,7 +39,8 @@ block_is_stale() {
 if [[ -L $OMARCHY_STATE/current/background ]]; then
   current_bg=$(readlink "$OMARCHY_STATE/current/background")
   current_bg=$(readlink -f -- "$current_bg" 2>/dev/null || true)
-  if [[ -n $current_bg && $current_bg == "$UMAMI_CACHE"/applied/* ]]; then
+  applied_root=$(umami_applied_root)
+  if [[ -n $current_bg && $current_bg == "$applied_root"/* ]]; then
     current_dir=$(dirname -- "$current_bg")
     if [[ ! -f $current_dir/$UMAMI_CLEAN_MARK ]]; then
       rm -f -- "$OMARCHY_STATE/current/background"

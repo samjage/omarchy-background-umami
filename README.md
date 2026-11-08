@@ -117,7 +117,7 @@ The schedule is a systemd user timer that Umami creates when you turn shuffle on
 
 Setup touches exactly these, and `umami-uninstall` undoes each one:
 
-- A clearly marked block in `~/.config/omarchy/extensions/omarchy-menu.jsonc`. It refuses to touch that file if it doesn't parse, if something else already overrides the Background row, or if the markers are damaged. Nothing is written until the result has been checked the way Omarchy will read it.
+- A clearly marked block in `~/.config/omarchy/extensions/omarchy-menu.jsonc`. It refuses to touch that file if it doesn't parse, if something else already overrides the Background row, or if the markers are damaged. Nothing is written until the result has been checked the way Omarchy will read it. Before the rewrite it keeps `omarchy-menu.jsonc.umami-backup` beside it, and `umami-uninstall` removes that too.
 - A three-line hook in `~/.config/omarchy/hooks/theme-set.d/` that restores your pick after a theme change.
 - While shuffle is on, two small units in `~/.config/systemd/user/`.
 - Settings, cache (thumbnails and the few most recent private wallpaper copies) and your saved pick in `~/.config/omarchy-background-umami`, `~/.cache/omarchy-background-umami` and `~/.local/state/omarchy-background-umami`.
@@ -128,7 +128,7 @@ Nothing else is changed, and no network access is used.
 
 - Only images inside a theme's `backgrounds/` folder count as theme wallpapers, so previews and README art never show up.
 - The carousel is Omarchy's own picker, fed lighter thumbnails (768×432 instead of 1536×864), so scrolling through hundreds of wallpapers takes about a tenth of the extra memory. The first look at a new folder makes them, then they're cached.
-- Files left in Umami's cache by older versions are never trusted: only a copy carrying a marker written after the clean step is reused, anything else is cleaned again before it can be set, and old unmarked ones are deleted every time the plugin loads.
+- Files left in Umami's cache by older versions are never trusted: only a copy carrying a marker written after the clean step is reused, anything else is cleaned again before it can be set, and old unmarked ones are deleted every time the plugin loads. Before they are deleted, the current-background link is unlinked first, so Omarchy's startup loader can never follow it to an original.
 - A rejected image no longer shows up as a system "Process crashed" notification: its memory is watched and it is stopped quietly.
 - The shell is never given your original file. Umami decodes it with libvips and writes a fresh, clean copy that holds only the pixels (no metadata, no extra data after the image), then sets that. This is because the shell's own image decoder reads parts of a file that other decoders skip, so a file that looks fine can still be expanded into gigabytes there. Side effects: color profiles are dropped, an animated image becomes its first frame, a JPEG is re-saved at quality 95, and images over 150 megapixels are refused.
 - Before any wallpaper is set (Apply, Shuffle, Restore, or a saved pick coming back after a theme change), Umami copies it into its private cache folder, makes the clean copy there under memory and CPU limits, and sets only that. A file that fails the check is skipped, and a file that was changed or replaced since you picked it is checked again. Omarchy's own unlimited picker is never used on your folders.

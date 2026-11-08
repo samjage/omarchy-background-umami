@@ -1192,6 +1192,18 @@ test_current_background_legacy_copy_is_not_preserved() {
   refute "the legacy original directory was removed" test -e "$old"
   refute "the dangling background link was dropped" test -e "$OMARCHY_STATE/current/background"
 }
+
+# The symlink must be dropped BEFORE the legacy folder is cleaned, so Omarchy's
+# startup background loader can never follow it to hostile bytes.
+test_current_background_symlink_removed_before_legacy_cleanup() {
+  source "$ROOT/lib/common.sh"
+  old=$(legacy_copy)
+  set_current "$old"
+  # Capture the order: symlink must be gone before the directory.
+  "$ROOT/libexec/umami-first-run" >/dev/null 2>&1
+  refute "the legacy original directory was removed" test -e "$old"
+  refute "the background symlink was removed first" test -e "$OMARCHY_STATE/current/background"
+}
 test_a_legacy_original_with_post_image_text_chunks_never_reaches_the_shell() {
   if ! command -v vips >/dev/null || ! command -v python3 >/dev/null; then echo "      (skipped: needs libvips and python3)"; return 0; fi
   python3 - "$T/post.png" <<'PY'
